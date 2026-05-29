@@ -19,6 +19,56 @@
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.04);
   }
 
+  .glass-card {
+    background: rgba(255, 253, 249, 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255, 255, 255, 0.4);
+    border-left: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.04);
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .glass-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(800px circle at var(--mouse-x, 0px) var(--mouse-y, 0px), rgba(255, 255, 255, 0.35), transparent 45%);
+    z-index: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+    opacity: 0;
+  }
+
+  .glass-card:hover {
+    transform: translateY(-8px);
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.06);
+    background: rgba(255, 253, 249, 0.75);
+  }
+
+  .glass-card:hover::before {
+    opacity: 1;
+  }
+
+  .dark .glass-card {
+    background: rgba(48, 49, 46, 0.6);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+  }
+
+  .dark .glass-card:hover {
+    background: rgba(48, 49, 46, 0.75);
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.3);
+  }
+
+  .dark .glass-card::before {
+    background: radial-gradient(800px circle at var(--mouse-x, 0px) var(--mouse-y, 0px), rgba(255, 255, 255, 0.08), transparent 45%);
+  }
+
+
   .liquid-bg {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -74,3 +124,42 @@
     overflow: hidden;
   }
 }
+
+/* Custom scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(159, 64, 45, 0.2);
+  border-radius: 9999px;
+  transition: background 0.3s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(159, 64, 45, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 180, 165, 0.2);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 180, 165, 0.4);
+}
+
+/* Firefox scrollbar support */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(159, 64, 45, 0.2) transparent;
+}
+
+.dark * {
+  scrollbar-color: rgba(255, 180, 165, 0.2) transparent;
+}
+

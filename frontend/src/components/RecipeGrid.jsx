@@ -1,6 +1,6 @@
 import RecipeCard from "./RecipeCard.jsx";
 
-function RecipeGrid({ recipes, onToggleIngredient, onDelete }) {
+function RecipeGrid({ recipes, onSelectRecipe }) {
   if (recipes.length === 0) {
     return (
       <div className="glass-panel grid min-h-[360px] place-items-center rounded-xl border border-dashed border-outline-variant px-6 py-12 text-center w-full">
@@ -23,8 +23,7 @@ function RecipeGrid({ recipes, onToggleIngredient, onDelete }) {
         <RecipeCard
           key={recipe.id}
           recipe={recipe}
-          onToggleIngredient={onToggleIngredient}
-          onDelete={onDelete}
+          onSelectRecipe={onSelectRecipe}
         />
       ))}
     </div>
