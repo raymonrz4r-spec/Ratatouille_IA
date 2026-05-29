@@ -1,4 +1,4 @@
-# Video2Recipe
+# Ratatouille
 
 Extrae recetas automaticamente desde videos de TikTok, Instagram Reels y YouTube usando IA.
 
