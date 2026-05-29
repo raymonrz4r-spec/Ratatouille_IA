@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ErrorToast from "./components/ErrorToast.jsx";
 import RecipeGrid from "./components/RecipeGrid.jsx";
 import SearchBar from "./components/SearchBar.jsx";
+import Patrocinador from "./components/Patrocinador.jsx";
 
 const STORAGE_KEY = "video2recipe.recipes";
 
