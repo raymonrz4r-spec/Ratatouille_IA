@@ -1,39 +1,75 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ErrorToast from "./components/ErrorToast.jsx";
 import RecipeGrid from "./components/RecipeGrid.jsx";
 import SearchBar from "./components/SearchBar.jsx";
 import Patrocinador from "./components/Patrocinador.jsx";
+import LoginPage from "./components/LoginPage.jsx";
 import Paypage from "./Paypage.jsx";
 
-const STORAGE_KEY = "video2recipe.recipes";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const SESSION_KEY = "video2recipe.session";
 
-function loadRecipes() {
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+async function apiRequest(path, options = {}) {
+  const { token, ...fetchOptions } = options;
+  const response = await fetch(`${API_URL}${path}`, {
+    ...fetchOptions,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(fetchOptions.headers || {}),
+    },
+  });
+
+  if (response.status === 204) return null;
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new ApiError(payload.detail || "No se pudo completar la solicitud.", response.status);
+  }
+
+  return payload;
+}
+
+function loadSession() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : [];
+    const saved = localStorage.getItem(SESSION_KEY);
+    return saved ? JSON.parse(saved) : null;
   } catch {
-    return [];
+    return null;
+  }
+}
+
+function loadSavedPlan() {
+  try {
+    return localStorage.getItem("video2recipe.userPlan") || "Gratuito";
+  } catch {
+    return "Gratuito";
   }
 }
 
 function App() {
-  const [recipes, setRecipes] = useState(loadRecipes);
+  const [session, setSession] = useState(loadSession);
+  const [recipes, setRecipes] = useState([]);
+  const [exploreRecipes, setExploreRecipes] = useState([]);
+  const [guestRecipe, setGuestRecipe] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExploreLoading, setIsExploreLoading] = useState(false);
   const [error, setError] = useState("");
-  const [userPlan, setUserPlan] = useState(() => {
-    try {
-      const saved = localStorage.getItem("video2recipe.userPlan");
-      return saved || "Gratuito";
-    } catch {
-      return "Gratuito";
-    }
-  });
+  const [userPlan, setUserPlan] = useState(loadSavedPlan);
   const [currentView, setCurrentView] = useState("kitchen"); // "kitchen" or "subscriptions"
   const [selectedRecipeId, setSelectedRecipeId] = useState(null);
 
   const selectedRecipe = useMemo(() => {
-    return recipes.find((r) => r.id === selectedRecipeId);
-  }, [recipes, selectedRecipeId]);
+    return [...recipes, ...exploreRecipes, guestRecipe].filter(Boolean).find((r) => r.id === selectedRecipeId);
+  }, [exploreRecipes, guestRecipe, recipes, selectedRecipeId]);
 
   const selectedRecipeProgress = useMemo(() => {
     if (!selectedRecipe) return 0;
@@ -44,16 +80,67 @@ function App() {
   }, [selectedRecipe]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
-  }, [recipes]);
-
-  useEffect(() => {
     try {
       localStorage.setItem("video2recipe.userPlan", userPlan);
     } catch (e) {
       console.error("No se pudo guardar el plan de usuario", e);
     }
   }, [userPlan]);
+
+  useEffect(() => {
+    try {
+      if (session) {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
+    } catch (e) {
+      console.error("No se pudo guardar la sesion", e);
+    }
+  }, [session]);
+
+  const withRecipeScope = useCallback((items, scope, token = session?.accessToken) => {
+    return items.map((recipe) => ({
+      ...recipe,
+      _scope: scope,
+      imageUrl: recipe.imageUrl && scope === "private" && token
+        ? `${API_URL}/api/recipes/${recipe.id}/image?access_token=${encodeURIComponent(token)}`
+        : recipe.imageUrl,
+    }));
+  }, [session?.accessToken]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadInitialData() {
+      if (!session?.accessToken) {
+        setRecipes([]);
+        setUserPlan("Gratuito");
+        return;
+      }
+
+      try {
+        const [savedRecipes, savedSubscription] = await Promise.all([
+          apiRequest("/api/recipes", { token: session.accessToken }),
+          apiRequest("/api/subscription", { token: session.accessToken }),
+        ]);
+
+        if (!isMounted) return;
+        setRecipes(Array.isArray(savedRecipes) ? withRecipeScope(savedRecipes, "private", session.accessToken) : []);
+        setUserPlan(savedSubscription?.plan || "Gratuito");
+      } catch (loadError) {
+        if (isMounted) {
+          if (handleAuthError(loadError)) return;
+          setError(loadError.message || "No pude cargar los datos guardados.");
+        }
+      }
+    }
+
+    loadInitialData();
+    return () => {
+      isMounted = false;
+    };
+  }, [session?.accessToken, withRecipeScope]);
 
   const stats = useMemo(() => {
     const ingredients = recipes.reduce((total, recipe) => total + recipe.ingredients.length, 0);
@@ -74,49 +161,212 @@ function App() {
     setIsLoading(true);
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
-      const response = await fetch(`${apiUrl}/api/extract`, {
+      const payload = await apiRequest("/api/extract", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        ...(session?.accessToken ? { token: session.accessToken } : {}),
         body: JSON.stringify({ url }),
       });
+      const scope = session?.accessToken ? "private" : "public";
+      const nextRecipe = withRecipeScope([payload], scope, session?.accessToken)[0];
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.detail || "No pude extraer la receta.");
+      if (scope === "private") {
+        setRecipes((current) => {
+          const next = [nextRecipe, ...current.filter((recipe) => recipe.sourceUrl !== payload.sourceUrl)];
+          return next.slice(0, 50);
+        });
+        setGuestRecipe(null);
+      } else {
+        setGuestRecipe(nextRecipe);
+        setError("Receta creada. Inicia sesion para guardarla en tu coleccion.");
       }
-
-      setRecipes((current) => {
-        const next = [payload, ...current.filter((recipe) => recipe.sourceUrl !== payload.sourceUrl)];
-        return next.slice(0, 50);
-      });
     } catch (extractError) {
+      if (handleAuthError(extractError)) return;
       setError(extractError.message || "Ocurrio un error inesperado.");
     } finally {
       setIsLoading(false);
     }
   }
 
-  function handleToggleIngredient(recipeId, ingredientId) {
+  async function handleToggleIngredient(recipeId, ingredientId) {
+    const recipe = recipes.find((item) => item.id === recipeId);
+    const ingredient = recipe?.ingredients.find((item) => item.id === ingredientId);
+    if (!recipe || !ingredient) return;
+
+    const previousRecipes = recipes;
+    const nextChecked = !ingredient.checked;
+
     setRecipes((current) =>
       current.map((recipe) => {
         if (recipe.id !== recipeId) return recipe;
         return {
           ...recipe,
           ingredients: recipe.ingredients.map((ingredient) =>
-            ingredient.id === ingredientId ? { ...ingredient, checked: !ingredient.checked } : ingredient,
+            ingredient.id === ingredientId ? { ...ingredient, checked: nextChecked } : ingredient,
           ),
         };
       }),
     );
+
+    try {
+      const updatedRecipe = await apiRequest(`/api/recipes/${recipeId}/ingredients/${ingredientId}`, {
+        method: "PATCH",
+        token: session.accessToken,
+        body: JSON.stringify({ checked: nextChecked }),
+      });
+      const authenticatedRecipe = withRecipeScope([updatedRecipe], "private", session.accessToken)[0];
+      setRecipes((current) =>
+        current.map((recipe) => (recipe.id === authenticatedRecipe.id ? authenticatedRecipe : recipe)),
+      );
+    } catch (toggleError) {
+      setRecipes(previousRecipes);
+      if (handleAuthError(toggleError)) return;
+      setError(toggleError.message || "No pude actualizar el ingrediente.");
+    }
   }
 
-  function handleDelete(recipeId) {
+  async function handleDelete(recipeId) {
+    const previousRecipes = recipes;
     setRecipes((current) => current.filter((recipe) => recipe.id !== recipeId));
+
+    try {
+      await apiRequest(`/api/recipes/${recipeId}`, { method: "DELETE", token: session.accessToken });
+    } catch (deleteError) {
+      setRecipes(previousRecipes);
+      if (handleAuthError(deleteError)) return;
+      setError(deleteError.message || "No pude eliminar la receta.");
+    }
   }
 
-  function handleClearAll() {
+  async function handleClearAll() {
+    const previousRecipes = recipes;
     setRecipes([]);
+
+    try {
+      await apiRequest("/api/recipes", { method: "DELETE", token: session.accessToken });
+    } catch (deleteError) {
+      setRecipes(previousRecipes);
+      if (handleAuthError(deleteError)) return;
+      setError(deleteError.message || "No pude borrar la coleccion.");
+    }
+  }
+
+  const handleSubscribe = useCallback(
+    async (plan) => {
+      const previousPlan = userPlan;
+      setUserPlan(plan);
+
+      try {
+        const savedSubscription = await apiRequest("/api/subscription", {
+          method: "PUT",
+          token: session.accessToken,
+          body: JSON.stringify({ plan }),
+        });
+        setUserPlan(savedSubscription.plan);
+      } catch (subscriptionError) {
+        setUserPlan(previousPlan);
+        if (handleAuthError(subscriptionError)) return;
+        setError(subscriptionError.message || "No pude guardar la suscripcion.");
+      }
+    },
+    [session?.accessToken, userPlan],
+  );
+
+  const loadExploreRecipes = useCallback(async () => {
+    if (!session?.accessToken) {
+      setError("Inicia sesion para explorar recetas.");
+      setCurrentView("login");
+      return;
+    }
+
+    setIsExploreLoading(true);
+    setError("");
+    try {
+      const payload = await apiRequest("/api/explore/recipes", { token: session.accessToken });
+      setExploreRecipes(Array.isArray(payload) ? withRecipeScope(payload, "public", session.accessToken) : []);
+    } catch (exploreError) {
+      if (handleAuthError(exploreError)) return;
+      setError(exploreError.message || "No pude cargar Explore.");
+    } finally {
+      setIsExploreLoading(false);
+    }
+  }, [session?.accessToken, withRecipeScope]);
+
+  useEffect(() => {
+    if (currentView === "explore") {
+      loadExploreRecipes();
+    }
+  }, [currentView, loadExploreRecipes]);
+
+  async function handleSaveExploreRecipe(recipeId) {
+    if (!session?.accessToken) {
+      setCurrentView("login");
+      return;
+    }
+
+    if (userPlan !== "Gourmet" && userPlan !== "Chef") {
+      setError("Guardar recetas de Explore requiere un plan Gourmet o Chef.");
+      setCurrentView("subscriptions");
+      return;
+    }
+
+    try {
+      const payload = await apiRequest(`/api/recipes/${recipeId}/save`, {
+        method: "POST",
+        token: session.accessToken,
+      });
+      const savedRecipe = withRecipeScope([payload.recipe], "private", session.accessToken)[0];
+      setRecipes((current) => {
+        const next = [savedRecipe, ...current.filter((recipe) => recipe.sourceUrl !== savedRecipe.sourceUrl)];
+        return next.slice(0, 50);
+      });
+      setCurrentView("kitchen");
+      setError("");
+    } catch (saveError) {
+      if (saveError.status === 403) {
+        setError(saveError.message);
+        setCurrentView("subscriptions");
+        return;
+      }
+      if (handleAuthError(saveError)) return;
+      setError(saveError.message || "No pude guardar la receta.");
+    }
+  }
+
+  const handleGoogleCredential = useCallback(async (idToken) => {
+    setError("");
+    setIsLoading(true);
+
+    try {
+      const auth = await apiRequest("/api/auth/google", {
+        method: "POST",
+        body: JSON.stringify({ idToken }),
+      });
+      setSession(auth);
+      setUserPlan("Gratuito");
+      setCurrentView("kitchen");
+    } catch (loginError) {
+      setError(loginError.message || "No pude iniciar sesion con Google.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  function handleLogout() {
+    setSession(null);
+    setRecipes([]);
+    setExploreRecipes([]);
+    setUserPlan("Gratuito");
+    setSelectedRecipeId(null);
+    setCurrentView("kitchen");
+  }
+
+  function handleAuthError(errorToHandle) {
+    if (errorToHandle?.status === 401) {
+      handleLogout();
+      setError("Tu sesion expiro. Inicia sesion otra vez.");
+      return true;
+    }
+    return false;
   }
 
   return (
@@ -160,8 +410,8 @@ function App() {
             </button>
 
             <button
-              onClick={() => setError("La sección de Explorar estará disponible próximamente.")}
-              className="text-on-surface-variant dark:text-surface-variant hover:text-primary font-label-md transition-all duration-300 pb-1 focus:outline-none"
+              onClick={() => setCurrentView(session?.accessToken ? "explore" : "login")}
+              className={`font-label-md transition-all duration-300 pb-1 focus:outline-none ${currentView === "explore" ? "text-primary dark:text-inverse-primary font-bold border-b-2 border-primary dark:border-inverse-primary" : "text-on-surface-variant dark:text-surface-variant hover:text-primary"}`}
             >
               Explore
             </button>
@@ -182,11 +432,19 @@ function App() {
             </div>
 
             <button
-              onClick={() => setCurrentView("subscriptions")}
+              onClick={() => (session?.accessToken ? handleLogout() : setCurrentView("login"))}
               className="scale-95 active:scale-90 transition-transform hover:bg-white/20 dark:hover:bg-white/5 p-2 rounded-full flex items-center focus:outline-none"
               title="Ver plan de suscripción"
             >
-              <span className="material-symbols-outlined text-primary">account_circle</span>
+              {session?.user?.pictureUrl ? (
+                <img
+                  src={session.user.pictureUrl}
+                  alt={session.user.name || session.user.email}
+                  className="h-8 w-8 rounded-full object-cover border border-white/40"
+                />
+              ) : (
+                <span className="material-symbols-outlined text-primary">account_circle</span>
+              )}
             </button>
           </div>
         </div>
@@ -222,28 +480,64 @@ function App() {
               </div>
             </section>
 
+            {guestRecipe && (
+              <section className="flex flex-col gap-5 mt-4">
+                <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+                  <div>
+                    <h2 className="font-headline-lg text-headline-lg text-primary">Resultado reciente</h2>
+                    <p className="font-body-md text-on-surface-variant">
+                      Esta receta queda en Explore. Para guardarla en tu coleccion necesitas iniciar sesion.
+                    </p>
+                  </div>
+                  <button className="liquid-button rounded-full px-5 py-3 text-on-primary font-label-md" type="button" onClick={() => setCurrentView("login")}>
+                    Iniciar sesion
+                  </button>
+                </div>
+                <RecipeGrid recipes={[guestRecipe]} onSelectRecipe={setSelectedRecipeId} />
+              </section>
+            )}
+
             <section className="flex flex-col gap-8 mt-8">
               <div className="flex justify-between items-end">
-                <h2 className="font-headline-lg text-headline-lg text-primary">Colección</h2>
-                {recipes.length > 0 && (
-                  <button
-                    className="text-error hover:text-on-error hover:bg-error transition-colors px-4 py-2 rounded-full font-label-md flex items-center gap-2"
-                    type="button"
-                    onClick={handleClearAll}
-                    title="Borrar colección"
-                  >
+                <h2 className="font-headline-lg text-headline-lg text-primary">Coleccion</h2>
+                {session?.accessToken && recipes.length > 0 && (
+                  <button className="text-error hover:text-on-error hover:bg-error transition-colors px-4 py-2 rounded-full font-label-md flex items-center gap-2" type="button" onClick={handleClearAll} title="Borrar coleccion">
                     <span className="material-symbols-outlined text-[20px]">delete</span>
                     <span className="hidden sm:inline">Borrar todo</span>
                   </button>
                 )}
               </div>
-              <RecipeGrid recipes={recipes} onSelectRecipe={setSelectedRecipeId} />
+              {session?.accessToken ? (
+                <RecipeGrid recipes={recipes} onSelectRecipe={setSelectedRecipeId} />
+              ) : (
+                <div className="glass-panel rounded-xl p-8 text-center border border-dashed border-outline-variant">
+                  <span className="material-symbols-outlined text-4xl text-primary">lock</span>
+                  <h3 className="mt-3 font-headline-md text-headline-md text-on-surface">Tu coleccion vive en tu cuenta</h3>
+                  <p className="mt-2 font-body-md text-on-surface-variant">Busca recetas como invitado. Inicia sesion para guardarlas en tu coleccion privada.</p>
+                  <button className="liquid-button mt-5 rounded-full px-6 py-3 text-on-primary font-label-md" type="button" onClick={() => setCurrentView("login")}>
+                    Iniciar sesion
+                  </button>
+                </div>
+              )}
             </section>
           </>
+        ) : currentView === "explore" ? (
+          <section className="flex flex-col gap-8">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+              <div>
+                <h1 className="font-display-lg text-display-lg text-primary">Explore</h1>
+                <p className="font-body-lg text-on-surface-variant">Las ultimas 50 recetas creadas por la comunidad.</p>
+              </div>
+              {isExploreLoading && <span className="font-label-md text-on-surface-variant">Cargando...</span>}
+            </div>
+            <RecipeGrid recipes={exploreRecipes} onSelectRecipe={setSelectedRecipeId} actionLabel={userPlan === "Gourmet" || userPlan === "Chef" ? "Guardar" : "Gourmet"} onAction={handleSaveExploreRecipe} />
+          </section>
+        ) : currentView === "login" ? (
+          <LoginPage error={error} isLoading={isLoading} onGoogleCredential={handleGoogleCredential} />
         ) : (
           <Paypage
             currentPlan={userPlan}
-            onSubscribe={setUserPlan}
+            onSubscribe={handleSubscribe}
             onNavigateToKitchen={() => setCurrentView("kitchen")}
           />
         )}
@@ -360,6 +654,7 @@ function App() {
                           className="mt-1 h-4 w-4 rounded border-outline accent-primary"
                           type="checkbox"
                           checked={ingredient.checked}
+                          disabled={selectedRecipe._scope !== "private"}
                           onChange={() => handleToggleIngredient(selectedRecipe.id, ingredient.id)}
                         />
                         <span className={ingredient.checked ? "font-body-md text-on-surface-variant/60 dark:text-surface-variant/50 line-through" : "font-body-md text-on-surface dark:text-inverse-on-surface"}>

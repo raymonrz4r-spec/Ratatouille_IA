@@ -37,7 +37,19 @@ if not exist .env (
   exit /b 1
 )
 
-:: 4. Cargar y verificar GROQ_API_KEY de forma segura (evita \r de line endings estilo Unix/Windows)
+:: 4. Intentar iniciar MySQL local si esta instalado y el puerto 3306 no responde
+powershell -NoProfile -Command "if (-not (Get-NetTCPConnection -LocalPort 3306 -ErrorAction SilentlyContinue)) { exit 1 }"
+if errorlevel 1 (
+  if exist "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqld.exe" (
+    if exist "C:\ProgramData\MySQL\MySQL Server 8.0\my.ini" (
+      echo Iniciando MySQL local en el puerto 3306 ...
+      start "Ratatouille MySQL" /min "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqld.exe" --defaults-file="C:\ProgramData\MySQL\MySQL Server 8.0\my.ini"
+      timeout /t 5 /nobreak >nul
+    )
+  )
+)
+
+:: 5. Cargar y verificar GROQ_API_KEY de forma segura (evita \r de line endings estilo Unix/Windows)
 set "MY_GROQ_KEY="
 for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do (
   if "%%A"=="GROQ_API_KEY" (
@@ -77,4 +89,3 @@ echo Frontend: http://localhost:5173
 echo ==================================================
 echo.
 pause
-

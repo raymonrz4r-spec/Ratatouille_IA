@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-function RecipeCard({ recipe, onSelectRecipe }) {
+function RecipeCard({ recipe, onSelectRecipe, actionLabel, onAction }) {
   const checkedCount = useMemo(
     () => recipe.ingredients.filter((ingredient) => ingredient.checked).length,
     [recipe.ingredients],
@@ -69,10 +69,24 @@ function RecipeCard({ recipe, onSelectRecipe }) {
           </div>
           <span className="font-label-sm text-label-sm text-on-surface-variant dark:text-surface-variant/80">{progress}%</span>
         </div>
+        {actionLabel && onAction && (
+          <button
+            className="mt-2 inline-flex h-11 items-center justify-center gap-2 rounded-full border border-primary/40 px-4 font-label-md text-primary hover:bg-primary/10 transition"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAction(recipe.id);
+            }}
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {actionLabel === "Guardar" ? "bookmark_add" : "workspace_premium"}
+            </span>
+            {actionLabel}
+          </button>
+        )}
       </div>
     </article>
   );
 }
 
 export default RecipeCard;
-
