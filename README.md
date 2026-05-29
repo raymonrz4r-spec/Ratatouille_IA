@@ -58,6 +58,7 @@ video2recipe/
 │   │   │   ├── SearchBar.jsx
 │   │   │   ├── RecipeGrid.jsx
 │   │   │   ├── RecipeCard.jsx
+│   │   │   ├── Patrocinador.jsx
 │   │   │   └── ErrorToast.jsx
 │   │   └── index.css
 │   ├── index.html
