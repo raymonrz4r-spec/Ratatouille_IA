@@ -16,6 +16,7 @@ from typing import Any, Iterator
 import yt_dlp
 import imageio_ffmpeg
 import mysql.connector
+import requests
 from mysql.connector import Error as MySQLError
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -590,22 +591,37 @@ def recipe_image_url(recipe_id: str, is_public: bool = False) -> str:
     return f"{api_base_url()}/api/{path}/{recipe_id}/image"
 
 
-def static_image_path_from_url(image_url: str | None) -> Path | None:
+def image_file_for_recipe(recipe_id: str) -> Path | None:
+    for suffix in (".jpg", ".jpeg", ".png", ".webp"):
+        image_path = IMAGES_DIR / f"{recipe_id}{suffix}"
+        if image_path.exists():
+            return image_path
+    return None
+
+
+def static_image_path_from_url(image_url: str | None, recipe_id: str | None = None) -> Path | None:
+    if recipe_id:
+        image_path = image_file_for_recipe(recipe_id)
+        if image_path:
+            return image_path
+
     if not image_url:
         return None
 
     parsed = urllib.parse.urlparse(image_url)
     image_path = parsed.path or image_url
     marker = "/images/"
-    if marker not in image_path:
-        return None
+    if marker in image_path:
+        filename = Path(image_path.split(marker, 1)[1]).name
+        if filename:
+            path = IMAGES_DIR / filename
+            return path if path.exists() else None
 
-    filename = Path(image_path.split(marker, 1)[1]).name
-    if not filename:
-        return None
+    endpoint_match = re.search(r"/api/(?:explore/)?recipes/([^/]+)/image/?$", image_path)
+    if endpoint_match:
+        return image_file_for_recipe(endpoint_match.group(1))
 
-    path = IMAGES_DIR / filename
-    return path if path.exists() else None
+    return None
 
 
 def save_recipe_image_file(recipe_id: str, image_path: Path, connection: Any | None = None) -> None:
@@ -628,11 +644,153 @@ def save_recipe_image_file(recipe_id: str, image_path: Path, connection: Any | N
             """,
             (recipe_id, mime_type, image_data),
         )
+        cursor.execute("SELECT visibility FROM recipes WHERE id = %s", (recipe_id,))
+        recipe_row = cursor.fetchone()
+        if recipe_row:
+            visibility = recipe_row[0] if isinstance(recipe_row, tuple) else recipe_row["visibility"]
+            cursor.execute(
+                "UPDATE recipes SET image_url = %s WHERE id = %s",
+                (recipe_image_url(recipe_id, visibility == "public"), recipe_id),
+            )
         if close_connection:
             connection.commit()
     finally:
         if close_connection:
             connection.close()
+
+
+def write_image_bytes(recipe_id: str, image_data: bytes, content_type: str) -> Path:
+    content_type = content_type.split(";", 1)[0].strip().lower()
+    suffix = ".png" if content_type == "image/png" else ".webp" if content_type == "image/webp" else ".jpg"
+    image_path = IMAGES_DIR / f"{recipe_id}{suffix}"
+    image_path.write_bytes(image_data)
+    return image_path
+
+
+def fetch_image_bytes(url: str, headers: dict[str, str] | None = None, timeout: int = 60) -> tuple[bytes, str]:
+    response = requests.get(
+        url,
+        headers={
+            "User-Agent": "RatatouilleAI/1.0",
+            "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+            **(headers or {}),
+        },
+        timeout=timeout,
+    )
+    if not response.ok:
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
+
+    content_type = response.headers.get("Content-Type", "").lower()
+    image_data = response.content
+
+    if not image_data or not content_type.startswith("image/"):
+        raise ValueError(f"Respuesta de imagen invalida: {content_type or 'sin content-type'}")
+    return image_data, content_type
+
+
+def generate_pollinations_image(prompt: str) -> tuple[bytes, str]:
+    api_key = os.getenv("POLLINATIONS_API_KEY", "").strip()
+    encoded_prompt = urllib.parse.quote(prompt)
+    errors: list[str] = []
+
+    if api_key:
+        url = f"https://gen.pollinations.ai/image/{encoded_prompt}?width=800&height=800&model=flux"
+        return fetch_image_bytes(url, {"Authorization": f"Bearer {api_key}"}, timeout=90)
+
+    legacy_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true"
+    try:
+        return fetch_image_bytes(legacy_url, timeout=60)
+    except Exception as exc:
+        errors.append(str(exc))
+
+    new_url = f"https://gen.pollinations.ai/image/{encoded_prompt}?width=800&height=800&model=flux"
+    try:
+        return fetch_image_bytes(new_url, timeout=60)
+    except Exception as exc:
+        errors.append(str(exc))
+
+    raise RuntimeError("; ".join(errors))
+
+
+def horde_api_base_url() -> str:
+    return os.getenv("HORDE_API_URL", "https://aihorde.net/api/v2").rstrip("/")
+
+
+def horde_headers(content_type: str | None = None) -> dict[str, str]:
+    headers = {
+        "apikey": os.getenv("HORDE_API_KEY", "0000000000").strip() or "0000000000",
+        "Client-Agent": "RatatouilleAI:1.0:local",
+        "Accept": "application/json",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def horde_json_request(url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> dict[str, Any]:
+    if payload is None:
+        response = requests.get(url, headers=horde_headers(), timeout=timeout)
+    else:
+        response = requests.post(url, json=payload, headers=horde_headers("application/json"), timeout=timeout)
+
+    if not response.ok:
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
+
+    return response.json()
+
+
+def decode_horde_image(image_value: str) -> tuple[bytes, str]:
+    if image_value.startswith("http://") or image_value.startswith("https://"):
+        return fetch_image_bytes(image_value, timeout=90)
+
+    if image_value.startswith("data:"):
+        header, encoded_data = image_value.split(",", 1)
+        mime_type = header.split(";", 1)[0].removeprefix("data:") or "image/png"
+        return base64.b64decode(encoded_data), mime_type
+
+    return base64.b64decode(image_value), "image/png"
+
+
+def generate_horde_image(prompt: str) -> tuple[bytes, str]:
+    request_payload = {
+        "prompt": f"{prompt} ### text, watermark, logo, label, blurry, low quality, deformed",
+        "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 10,
+            "n": 1,
+            "cfg_scale": 7,
+            "sampler_name": "k_euler_a",
+        },
+        "nsfw": False,
+        "censor_nsfw": True,
+        "r2": False,
+        "shared": False,
+    }
+    submit = horde_json_request(f"{horde_api_base_url()}/generate/async", request_payload, timeout=30)
+    request_id = submit.get("id")
+    if not request_id:
+        raise RuntimeError(submit.get("message") or "AI Horde no devolvio id de generacion.")
+
+    timeout_seconds = int(os.getenv("HORDE_IMAGE_TIMEOUT_SECONDS", "180"))
+    deadline = time.monotonic() + timeout_seconds
+    status_url = f"{horde_api_base_url()}/generate/status/{request_id}"
+    last_status: dict[str, Any] = {}
+
+    while time.monotonic() < deadline:
+        time.sleep(5)
+        last_status = horde_json_request(status_url, timeout=30)
+        generations = last_status.get("generations") or []
+        if generations:
+            image_value = generations[0].get("img")
+            if image_value:
+                return decode_horde_image(str(image_value))
+        if last_status.get("faulted"):
+            raise RuntimeError(last_status.get("message") or "AI Horde marco la generacion como fallida.")
+
+    wait_time = last_status.get("wait_time")
+    queue_position = last_status.get("queue_position")
+    raise TimeoutError(f"AI Horde no termino a tiempo. wait_time={wait_time}, queue_position={queue_position}")
 
 
 def backfill_recipe_images_from_files(connection: Any) -> None:
@@ -648,7 +806,7 @@ def backfill_recipe_images_from_files(connection: Any) -> None:
         """
     )
     for row in cursor.fetchall():
-        image_path = static_image_path_from_url(row["image_url"])
+        image_path = static_image_path_from_url(row["image_url"], row["id"])
         if image_path:
             save_recipe_image_file(row["id"], image_path, connection)
 
@@ -659,6 +817,7 @@ def load_recipe(recipe_id: str, user_id: str, connection: Any | None = None) -> 
         connection = mysql.connector.connect(**get_mysql_settings())
 
     try:
+        backfilled_image = False
         cursor = connection.cursor(dictionary=True)
         cursor.execute("SELECT * FROM recipes WHERE id = %s AND user_id = %s", (recipe_id, user_id))
         row = cursor.fetchone()
@@ -667,8 +826,17 @@ def load_recipe(recipe_id: str, user_id: str, connection: Any | None = None) -> 
 
         recipe = recipe_from_row(row)
         cursor.execute("SELECT 1 FROM recipe_images WHERE recipe_id = %s", (recipe.id,))
-        if cursor.fetchone():
+        has_image = cursor.fetchone() is not None
+        if not has_image:
+            image_path = static_image_path_from_url(row.get("image_url"), recipe.id)
+            if image_path:
+                save_recipe_image_file(recipe.id, image_path, connection)
+                has_image = True
+                backfilled_image = True
+        if has_image:
             recipe.imageUrl = recipe_image_url(recipe.id, row.get("visibility") == "public")
+        else:
+            recipe.imageUrl = None
 
         cursor.execute(
             """
@@ -693,6 +861,8 @@ def load_recipe(recipe_id: str, user_id: str, connection: Any | None = None) -> 
             (recipe.id,),
         )
         recipe.notes = [item["text"] for item in cursor.fetchall()]
+        if close_connection and backfilled_image:
+            connection.commit()
         return recipe
     finally:
         if close_connection:
@@ -950,7 +1120,8 @@ def save_public_recipe_to_user(public_recipe_id: str, user_id: str) -> Recipe:
                 (private_id, image_row["mime_type"], image_row["image_data"]),
             )
 
-    return saved_recipe
+    reloaded_recipe = load_recipe(saved_recipe.id, user_id)
+    return reloaded_recipe or saved_recipe
 
 
 def get_groq_client() -> Groq:
@@ -1286,36 +1457,65 @@ def update_saved_subscription(payload: Subscription, user: User = Depends(curren
 
 
 def generate_recipe_image(title: str, recipe_id: str, is_public: bool = False) -> tuple[str, Path] | None:
-    try:
-        import urllib.request
-        
-        # Using Pollinations AI since Gemini Imagen requires a paid tier
-        prompt = f"Professional food photography of {title}, high quality, cinematic lighting, appetizing, highly detailed"
-        encoded_prompt = urllib.parse.quote(prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=800&nologo=true"
-        
-        image_filename = f"{recipe_id}.jpg"
-        image_path = IMAGES_DIR / image_filename
-        
-        req = urllib.request.Request(
-            image_url, 
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        
-        with urllib.request.urlopen(req) as response, open(image_path, 'wb') as out_file:
-            out_file.write(response.read())
+    prompt = f"Professional food photography of {title}, high quality, cinematic lighting, appetizing, highly detailed"
+    provider_errors: list[str] = []
 
-        return recipe_image_url(recipe_id, is_public), image_path
-            
-    except Exception as e:
-        print(f"Error generando imagen: {e}")
-        return None
+    for provider_name, generator in (
+        ("Pollinations", generate_pollinations_image),
+        ("AI Horde", generate_horde_image),
+    ):
+        try:
+            image_data, content_type = generator(prompt)
+            image_path = write_image_bytes(recipe_id, image_data, content_type)
+            print(f"Imagen generada con {provider_name}: {recipe_id}")
+            return recipe_image_url(recipe_id, is_public), image_path
+        except Exception as exc:
+            provider_errors.append(f"{provider_name}: {exc}")
+            print(f"Error generando imagen con {provider_name}: {exc}")
+
+    print(f"No se pudo generar imagen para {recipe_id}. {' | '.join(provider_errors)}")
+    return None
+
+
+def find_existing_recipe_by_url(source_url: str, owner_id: str) -> Recipe | None:
+    """Busca en la DB si ya existe una receta con el mismo source_url para el owner dado."""
+    url_hash = source_url_hash(source_url)
+    try:
+        with mysql_connection() as connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT id FROM recipes WHERE user_id = %s AND source_url_hash = %s",
+                (owner_id, url_hash),
+            )
+            row = cursor.fetchone()
+            if row:
+                return load_recipe(row["id"], owner_id, connection)
+    except Exception:
+        pass
+    return None
+
 
 @app.post("/api/extract", response_model=Recipe)
 def extract_from_video(payload: ExtractRequest, user: User | None = Depends(optional_current_user)) -> Recipe:
+    ensure_database_ready()
+    source_url = str(payload.url)
+    should_save_private = user is not None
+    owner_id = user.id if should_save_private else "public-user"
+
+    # Verificar si la receta ya existe en la DB antes de procesarla
+    existing_recipe = find_existing_recipe_by_url(source_url, owner_id)
+    if existing_recipe is not None:
+        if not existing_recipe.imageUrl:
+            generated_image = generate_recipe_image(existing_recipe.title, existing_recipe.id, owner_id == "public-user")
+            if generated_image:
+                _, image_path = generated_image
+                save_recipe_image_file(existing_recipe.id, image_path)
+                reloaded_recipe = load_recipe(existing_recipe.id, owner_id)
+                return reloaded_recipe or existing_recipe
+        return existing_recipe
+
     get_ffmpeg_location()
     client = get_groq_client()
-    source_url = str(payload.url)
 
     TEMP_ROOT.mkdir(exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix="video2recipe-", dir=TEMP_ROOT))
@@ -1323,8 +1523,6 @@ def extract_from_video(payload: ExtractRequest, user: User | None = Depends(opti
         audio_path = download_audio(source_url, Path(temp_dir))
         transcript = transcribe_audio(client, audio_path)
         recipe = extract_recipe(client, transcript, source_url)
-        should_save_private = user is not None
-        owner_id = user.id if should_save_private else "public-user"
         visibility = "private" if should_save_private else "public"
         recipe_id = hashlib.sha256(f"{owner_id}:{source_url}:{recipe.title}".encode("utf-8")).hexdigest()[:16]
         recipe.id = f"recipe-{recipe_id}"
@@ -1338,6 +1536,7 @@ def extract_from_video(payload: ExtractRequest, user: User | None = Depends(opti
         saved_recipe = save_recipe(recipe, owner_id, visibility)
         if image_path:
             save_recipe_image_file(saved_recipe.id, image_path)
-        return saved_recipe
+        reloaded_recipe = load_recipe(saved_recipe.id, owner_id)
+        return reloaded_recipe or saved_recipe
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -402,12 +402,7 @@ function App() {
             >
               Planes
             </button>
-            <button
-              onClick={() => setError("La sección de Favoritos estará disponible próximamente.")}
-              className="text-on-surface-variant dark:text-surface-variant hover:text-primary font-label-md transition-all duration-300 pb-1 focus:outline-none"
-            >
-              Favorites
-            </button>
+            
 
             <button
               onClick={() => setCurrentView(session?.accessToken ? "explore" : "login")}
