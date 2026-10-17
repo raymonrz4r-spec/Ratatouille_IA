@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍳 Ratatouille AI — Multimodal Video-to-Recipe Extraction Engine
+# Ratatouille AI — Multimodal Video-to-Recipe Extraction Engine
 
 **Motor inteligente de extracción y estructuración de recetas culinarias a partir de vídeos de TikTok, Instagram Reels y YouTube Shorts utilizando Inteligencia Artificial multimodal y arquitecturas RESTful.**
 
@@ -16,15 +16,15 @@
 
 ---
 
-## 📌 Descripción del Proyecto
+## Descripción del Proyecto
 
-**Ratatouille AI** resuelve el problema de la información no estructurada en redes sociales. Transforma clips de vídeo breves (donde los chefs o creadores muestran pasos apresurados) en recetas detalladas, estructuradas y accionables. 
+Ratatouille AI resuelve el problema de la información no estructurada en redes sociales. Transforma clips de vídeo breves (donde los chefs o creadores muestran pasos apresurados) en recetas detalladas, estructuradas y accionables. 
 
-El sistema descarga el contenido audiovisual mediante pipelines optimizados, extrae el flujo de audio con **FFmpeg**, realiza la transcripción fonética de alta precisión mediante **Whisper en Groq** y utiliza **Google Gemini** para razonar sobre la preparación, estructurando ingredientes, cantidades, tiempos de cocción y pasos ordenados en un esquema JSON validado con **Pydantic** y almacenado de forma persistente en **MySQL**.
+El sistema descarga el contenido audiovisual mediante pipelines optimizados, extrae el flujo de audio con FFmpeg, realiza la transcripción fonética de alta precisión mediante Whisper en Groq y utiliza Google Gemini para razonar sobre la preparación, estructurando ingredientes, cantidades, tiempos de cocción y pasos ordenados en un esquema JSON validado con Pydantic y almacenado de forma persistente en MySQL.
 
 ---
 
-## 🏗️ Flujo de Arquitectura y Pipeline ETL
+## Flujo de Arquitectura y Pipeline ETL
 
 ```
 [ Enlace de Video (TikTok / IG / YT) ]
@@ -54,17 +54,17 @@ El sistema descarga el contenido audiovisual mediante pipelines optimizados, ext
 
 ---
 
-## ✨ Características Principales
+## Características Principales
 
 * **Ingesta Multiplataforma:** Soporte para URLs de TikTok, Instagram Reels y YouTube Shorts/Videos.
 * **Procesamiento Asíncrono de Medios:** Descarga eficiente y aislamiento de canales de audio para minimizar consumo de ancho de banda.
-* **Inferencia de IA de Baja Latencia:** Integración híbrida con **Groq** para transcripción instantánea y **Google GenAI** para razonamiento contextual culinario.
+* **Inferencia de IA de Baja Latencia:** Integración híbrida con Groq para transcripción instantánea y Google GenAI para razonamiento contextual culinario.
 * **Normalización de Ingredientes y Pasos:** Algoritmo que clasifica ingredientes por tipo, cantidades exactas y pasos cronológicos interactivos.
 * **Persistencia Relacional Segura:** Almacenamiento en MySQL de usuarios (autenticados con Google OAuth), recetas, listas interactivas y miniaturas en binario BLOB.
 
 ---
 
-## 🔌 Especificación de la API (FastAPI)
+## Especificación de la API (FastAPI)
 
 | Método | Endpoint | Descripción |
 | :--- | :--- | :--- |
@@ -76,18 +76,18 @@ El sistema descarga el contenido audiovisual mediante pipelines optimizados, ext
 
 ---
 
-## 🛠️ Stack Tecnológico Detallado
+## Stack Tecnológico Detallado
 
 * **Backend:** FastAPI, Uvicorn, Pydantic v2.
-* **Inteligencia Artificial:** Google Gemini SDK (`google-genai`), Groq API (`groq`).
-* **Ingesta Multimedia:** `yt-dlp`, `imageio-ffmpeg`.
-* **Base de Datos:** MySQL 8.0+ (`mysql-connector-python`).
+* **Inteligencia Artificial:** Google Gemini SDK (google-genai), Groq API (groq).
+* **Ingesta Multimedia:** yt-dlp, imageio-ffmpeg.
+* **Base de Datos:** MySQL 8.0+ (mysql-connector-python).
 * **Frontend:** React, Vite, Tailwind CSS.
 * **Autenticación:** Google OAuth 2.0.
 
 ---
 
-## ⚡ Instalación y Puesta en Marcha
+## Instalación y Puesta en Marcha
 
 ### 1. Clonar el Repositorio
 ```bash
@@ -125,7 +125,7 @@ uvicorn main:app --reload --port 8000
 
 ---
 
-## 👤 Autor
+## Autor
 
 **Raymon Rosario**  
 * Software Engineer | Backend Developer  
