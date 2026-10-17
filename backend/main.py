@@ -1,3 +1,29 @@
+"""
+MOTOR EXTRACTOR DE RECETAS CON INTELIGENCIA ARTIFICIAL (backend/main.py)
+
+EXPLICACION PARA PERSONAS NO TECNICAS:
+Este archivo es el motor inteligente de Ratatouille. Resuelve un problema
+muy comun: cuando vemos un video rapido de cocina en TikTok, Instagram o
+YouTube, es dificil pausar cada segundo para anotar los ingredientes y pasos.
+
+Como trabaja este archivo paso a paso:
+1. Recepcion del Enlace: El usuario pega el enlace del video en la web.
+2. Descarga y Separacion: El programa descarga el video y le extrae solo
+   el audio para que sea liviano y no consuma memoria innecesaria.
+3. El Oido Inteligente (Groq Whisper): Escucha todo lo que dice el cocinero
+   y lo transcribe exactamente a texto en cuestion de segundos.
+4. El Cerebro Culinario (Google Gemini): Lee la transcripcion, comprende
+   el contexto culinario y separa magicamente:
+   - Nombre de la receta.
+   - Lista exacta de ingredientes y cantidades (gramos, tazas, cucharadas).
+   - Pasos ordenados cronologicamente (Paso 1, Paso 2, etc.).
+   - Tiempos de preparacion y porciones estimadas.
+5. Archivero Seguro (MySQL): Guarda la receta en la cuenta del usuario para
+   que pueda consultarla, marcar ingredientes comprados y cocinar cuando quiera.
+6. Puertas de Seguridad: Usa inicio de sesion oficial de Google para que
+   cada persona solo vea sus recetas privadas.
+"""
+
 import json
 import base64
 import hashlib
