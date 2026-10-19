@@ -19,5 +19,9 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: APP_SECRET
+        sync: false
       - key: CORS_ORIGINS
         value: https://ratatouille-ia.vercel.app,http://localhost:5173
