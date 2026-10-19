@@ -1453,7 +1453,23 @@ Informacion del video:
     if gemini_key:
         try:
             gemini_client = genai.Client(api_key=gemini_key)
-            gemini_models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
+            gemini_models = [
+                "gemini-3.8-flash",
+                "gemini-3.1-pro-preview",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+            ]
+            try:
+                for m in gemini_client.models.list():
+                    m_name = getattr(m, "name", "").replace("models/", "")
+                    if m_name and m_name not in gemini_models:
+                        if "flash" in m_name.lower():
+                            gemini_models.insert(0, m_name)
+                        elif "pro" in m_name.lower():
+                            gemini_models.append(m_name)
+            except Exception as list_err:
+                print(f"Nota: list_models en Gemini no disponible: {list_err}")
+
             for g_model in gemini_models:
                 try:
                     gemini_resp = gemini_client.models.generate_content(
@@ -1462,6 +1478,7 @@ Informacion del video:
                     )
                     data = extract_json(gemini_resp.text or "{}")
                     if data and (data.get("ingredients") or data.get("steps")):
+                        print(f"Receta estructurada exitosamente con Gemini: {g_model}")
                         break
                 except Exception as g_exc:
                     print(f"Error con Gemini({g_model}): {g_exc}")
@@ -1472,7 +1489,16 @@ Informacion del video:
 
     # 2. Si no funciono o no hay Gemini, intentar con Groq
     if data is None and client is not None:
-        groq_models = ["llama-3.1-8b-instant", "llama-3.1-70b-versatile", "mixtral-8x7b-32768"]
+        groq_models = []
+        try:
+            available_groq = client.models.list()
+            groq_models = [m.id for m in available_groq.data if "whisper" not in m.id.lower()]
+        except Exception as groq_list_err:
+            print(f"Nota: list_models en Groq: {groq_list_err}")
+
+        if not groq_models:
+            groq_models = ["llama-3.3-70b-specdec", "llama-3.2-3b-preview", "llama-3.2-1b-preview", "qwen-2.5-32b"]
+
         for q_model in groq_models:
             try:
                 completion = client.chat.completions.create(
@@ -1490,6 +1516,7 @@ Informacion del video:
                 content = completion.choices[0].message.content or "{}"
                 data = extract_json(content)
                 if data and (data.get("ingredients") or data.get("steps")):
+                    print(f"Receta estructurada exitosamente con Groq: {q_model}")
                     break
             except Exception as q_exc:
                 print(f"Error con Groq({q_model}): {q_exc}")
