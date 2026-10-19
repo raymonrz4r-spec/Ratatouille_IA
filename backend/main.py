@@ -1453,35 +1453,47 @@ Informacion del video:
     if gemini_key:
         try:
             gemini_client = genai.Client(api_key=gemini_key)
-            gemini_resp = gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt,
-            )
-            data = extract_json(gemini_resp.text or "{}")
-        except Exception as gemini_exc:
-            print(f"Error con Gemini al estructurar receta: {gemini_exc}")
-            errors.append(f"Gemini: {gemini_exc}")
+            gemini_models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
+            for g_model in gemini_models:
+                try:
+                    gemini_resp = gemini_client.models.generate_content(
+                        model=g_model,
+                        contents=prompt,
+                    )
+                    data = extract_json(gemini_resp.text or "{}")
+                    if data and (data.get("ingredients") or data.get("steps")):
+                        break
+                except Exception as g_exc:
+                    print(f"Error con Gemini({g_model}): {g_exc}")
+                    errors.append(f"Gemini({g_model}): {g_exc}")
+        except Exception as gemini_init_exc:
+            print(f"Error al inicializar cliente Gemini: {gemini_init_exc}")
+            errors.append(f"Gemini Init: {gemini_init_exc}")
 
     # 2. Si no funciono o no hay Gemini, intentar con Groq
     if data is None and client is not None:
-        try:
-            completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Eres un chef editor que convierte transcripciones y descripciones de videos en recetas estructuradas y devuelve JSON valido.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
-            content = completion.choices[0].message.content or "{}"
-            data = extract_json(content)
-        except Exception as groq_exc:
-            print(f"Error con Groq al estructurar receta: {groq_exc}")
-            errors.append(f"Groq: {groq_exc}")
+        groq_models = ["llama-3.1-8b-instant", "llama-3.1-70b-versatile", "mixtral-8x7b-32768"]
+        for q_model in groq_models:
+            try:
+                completion = client.chat.completions.create(
+                    model=q_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Eres un chef editor que convierte transcripciones y descripciones de videos en recetas estructuradas y devuelve JSON valido.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+                content = completion.choices[0].message.content or "{}"
+                data = extract_json(content)
+                if data and (data.get("ingredients") or data.get("steps")):
+                    break
+            except Exception as q_exc:
+                print(f"Error con Groq({q_model}): {q_exc}")
+                errors.append(f"Groq({q_model}): {q_exc}")
 
     if data is None:
         raise HTTPException(
