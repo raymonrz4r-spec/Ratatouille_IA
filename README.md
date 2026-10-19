@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-AI%20GenAI-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
 [![Groq](https://img.shields.io/badge/Groq-Whisper%20STT-F55036?style=for-the-badge)](https://groq.com/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supabase-4479A1?style=for-the-badge&logo=postgresql&logoColor=white)](https://supabase.com/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Audio%20Processing-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![React](https://img.shields.io/badge/React-18%2B-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 
@@ -20,7 +20,7 @@
 
 Ratatouille AI resuelve el problema de la información no estructurada en redes sociales. Transforma clips de vídeo breves (donde los chefs o creadores muestran pasos apresurados) en recetas detalladas, estructuradas y accionables. 
 
-El sistema descarga el contenido audiovisual mediante pipelines optimizados, extrae el flujo de audio con FFmpeg, realiza la transcripción fonética de alta precisión mediante Whisper en Groq y utiliza Google Gemini para razonar sobre la preparación, estructurando ingredientes, cantidades, tiempos de cocción y pasos ordenados en un esquema JSON validado con Pydantic y almacenado de forma persistente en MySQL.
+El sistema descarga el contenido audiovisual mediante pipelines optimizados, extrae el flujo de audio con FFmpeg, realiza la transcripción fonética de alta precisión mediante Whisper en Groq y utiliza Google Gemini para razonar sobre la preparación, estructurando ingredientes, cantidades, tiempos de cocción y pasos ordenados en un esquema JSON validado con Pydantic y almacenado de forma persistente en PostgreSQL (Supabase).
 
 ---
 
@@ -54,17 +54,29 @@ El sistema descarga el contenido audiovisual mediante pipelines optimizados, ext
 
 ---
 
+<<<<<<< HEAD
 ## Características Principales
 
 * **Ingesta Multiplataforma:** Soporte para URLs de TikTok, Instagram Reels y YouTube Shorts/Videos.
 * **Procesamiento Asíncrono de Medios:** Descarga eficiente y aislamiento de canales de audio para minimizar consumo de ancho de banda.
 * **Inferencia de IA de Baja Latencia:** Integración híbrida con Groq para transcripción instantánea y Google GenAI para razonamiento contextual culinario.
+=======
+## ✨ Características Principales
+
+* **Ingesta Multiplataforma:** Soporte para URLs de TikTok, Instagram Reels y YouTube Shorts/Videos.
+* **Procesamiento Asíncrono de Medios:** Descarga eficiente y aislamiento de canales de audio para minimizar consumo de ancho de banda.
+* **Inferencia de IA de Baja Latencia:** Integración híbrida con **Groq** para transcripción instantánea y **Google GenAI** para razonamiento contextual culinario.
+>>>>>>> ecd439a (feat: migrate backend to PostgreSQL (Supabase), add Docker & Render blueprint, update frontend CDN)
 * **Normalización de Ingredientes y Pasos:** Algoritmo que clasifica ingredientes por tipo, cantidades exactas y pasos cronológicos interactivos.
 * **Persistencia Relacional Segura:** Almacenamiento en MySQL de usuarios (autenticados con Google OAuth), recetas, listas interactivas y miniaturas en binario BLOB.
 
 ---
 
+<<<<<<< HEAD
 ## Especificación de la API (FastAPI)
+=======
+## 🔌 Especificación de la API (FastAPI)
+>>>>>>> ecd439a (feat: migrate backend to PostgreSQL (Supabase), add Docker & Render blueprint, update frontend CDN)
 
 | Método | Endpoint | Descripción |
 | :--- | :--- | :--- |
@@ -76,18 +88,31 @@ El sistema descarga el contenido audiovisual mediante pipelines optimizados, ext
 
 ---
 
+<<<<<<< HEAD
 ## Stack Tecnológico Detallado
 
 * **Backend:** FastAPI, Uvicorn, Pydantic v2.
 * **Inteligencia Artificial:** Google Gemini SDK (google-genai), Groq API (groq).
 * **Ingesta Multimedia:** yt-dlp, imageio-ffmpeg.
 * **Base de Datos:** MySQL 8.0+ (mysql-connector-python).
+=======
+## 🛠️ Stack Tecnológico Detallado
+
+* **Backend:** FastAPI, Uvicorn, Pydantic v2.
+* **Inteligencia Artificial:** Google Gemini SDK (`google-genai`), Groq API (`groq`).
+* **Ingesta Multimedia:** `yt-dlp`, `imageio-ffmpeg`.
+* **Base de Datos:** MySQL 8.0+ (`mysql-connector-python`).
+>>>>>>> ecd439a (feat: migrate backend to PostgreSQL (Supabase), add Docker & Render blueprint, update frontend CDN)
 * **Frontend:** React, Vite, Tailwind CSS.
 * **Autenticación:** Google OAuth 2.0.
 
 ---
 
+<<<<<<< HEAD
 ## Instalación y Puesta en Marcha
+=======
+## ⚡ Instalación y Puesta en Marcha
+>>>>>>> ecd439a (feat: migrate backend to PostgreSQL (Supabase), add Docker & Render blueprint, update frontend CDN)
 
 ### 1. Clonar el Repositorio
 ```bash
@@ -125,7 +150,11 @@ uvicorn main:app --reload --port 8000
 
 ---
 
+<<<<<<< HEAD
 ## Autor
+=======
+## 👤 Autor
+>>>>>>> ecd439a (feat: migrate backend to PostgreSQL (Supabase), add Docker & Render blueprint, update frontend CDN)
 
 **Raymon Rosario**  
 * Software Engineer | Backend Developer  

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ratatouille-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        value: https://khayklpgvggclpjaixqg.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoYXlrbHBndmdnY2xwamFpeHFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzODI1MjAsImV4cCI6MjEwNzk1ODUyMH0.KCSGIhI2IENzZLnP2WN8ZcgX6bYksVGqWUjR_i80p_A
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://ratatouille-ia.vercel.app,http://localhost:5173

@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+backend/.env
+frontend
+node_modules
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+backend/.tmp
+*.bat

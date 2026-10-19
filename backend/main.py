@@ -41,12 +41,14 @@ from typing import Any, Iterator
 
 import yt_dlp
 import imageio_ffmpeg
-import mysql.connector
+import psycopg2
+from psycopg2 import Error as PostgresError
+from psycopg2.extras import RealDictCursor
 import requests
-from mysql.connector import Error as MySQLError
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from groq import Groq
 from pydantic import BaseModel, Field, HttpUrl
@@ -60,23 +62,35 @@ load_dotenv(BASE_DIR.parent / ".env", encoding="utf-8-sig")
 
 APP_NAME = "Video2Recipe"
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
-TEMP_ROOT = BASE_DIR / ".tmp"
+TEMP_ROOT = Path(os.getenv("TEMP_ROOT", str(BASE_DIR / ".tmp")))
 IMAGES_DIR = BASE_DIR / "static" / "images"
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_READY = False
-DATABASE_ERROR = "MySQL no se ha inicializado todavia."
+DATABASE_ERROR = "PostgreSQL (Supabase) no se ha inicializado todavia."
 
 app = FastAPI(title=APP_NAME, version="1.0.0")
 
 app.mount("/images", StaticFiles(directory=str(IMAGES_DIR)), name="images")
+
+_extra_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if os.getenv("FRONTEND_URL"):
+    _extra_origins.append(os.getenv("FRONTEND_URL", "").strip().rstrip("/"))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://tttfsqq3-5173.use2.devtunnels.ms/"
+        "http://localhost:8000",
+        "http://localhost:7860",
+        "https://tttfsqq3-5173.use2.devtunnels.ms",
+        *_extra_origins,
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.hf\.space",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -197,38 +211,50 @@ def verify_access_token(token: str) -> str:
         raise HTTPException(status_code=401, detail="Sesion invalida o expirada.") from exc
 
 
-def get_mysql_settings(include_database: bool = True) -> dict[str, Any]:
-    database = os.getenv("MYSQL_DATABASE") or os.getenv("DB_NAME") or "ratatouille"
-    if not re.fullmatch(r"[A-Za-z0-9_$]+", database):
-        raise HTTPException(
-            status_code=500,
-            detail="MYSQL_DATABASE/DB_NAME solo puede contener letras, numeros, _ o $.",
-        )
+def get_database_url() -> str:
+    dsn = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("SUPABASE_DB_URL")
+        or os.getenv("POSTGRES_URL")
+        or ""
+    ).strip()
+    if dsn:
+        if dsn.startswith("postgres://"):
+            dsn = "postgresql://" + dsn[len("postgres://") :]
+        return dsn
 
-    settings: dict[str, Any] = {
-        "host": os.getenv("MYSQL_HOST") or os.getenv("DB_HOST") or "localhost",
-        "port": int(os.getenv("MYSQL_PORT") or os.getenv("DB_PORT") or "3306"),
-        "user": os.getenv("MYSQL_USER") or os.getenv("DB_USER") or "root",
-        "password": os.getenv("MYSQL_PASSWORD") or os.getenv("DB_PASSWORD") or "",
-        "charset": "utf8mb4",
-        "collation": "utf8mb4_unicode_ci",
-        "autocommit": False,
-    }
-    if include_database:
-        settings["database"] = database
-    return settings
+    host = os.getenv("PGHOST") or os.getenv("DB_HOST") or ""
+    if host:
+        port = os.getenv("PGPORT") or os.getenv("DB_PORT") or "5432"
+        user = os.getenv("PGUSER") or os.getenv("DB_USER") or "postgres"
+        password = urllib.parse.quote_plus(os.getenv("PGPASSWORD") or os.getenv("DB_PASSWORD") or "")
+        database = os.getenv("PGDATABASE") or os.getenv("DB_NAME") or "postgres"
+        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+    raise HTTPException(
+        status_code=503,
+        detail="Falta DATABASE_URL en .env o secretos del servidor (copia el Connection String URI desde Supabase > Settings > Database).",
+    )
+
+
+def open_db_connection() -> Any:
+    dsn = get_database_url()
+    try:
+        return psycopg2.connect(dsn, connect_timeout=10)
+    except (PostgresError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo conectar a PostgreSQL (Supabase). Revisa DATABASE_URL en .env.",
+        ) from exc
+
+
+def dict_cursor(connection: Any) -> Any:
+    return connection.cursor(cursor_factory=RealDictCursor)
 
 
 @contextmanager
-def mysql_connection(include_database: bool = True) -> Iterator[Any]:
-    try:
-        connection = mysql.connector.connect(**get_mysql_settings(include_database))
-    except (MySQLError, ValueError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="No se pudo conectar a MySQL. Revisa MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD y MYSQL_DATABASE en .env.",
-        ) from exc
-
+def db_connection() -> Iterator[Any]:
+    connection = open_db_connection()
     try:
         yield connection
         connection.commit()
@@ -239,65 +265,86 @@ def mysql_connection(include_database: bool = True) -> Iterator[Any]:
         connection.close()
 
 
+# Alias para compatibilidad interna
+mysql_connection = db_connection
+
+
 def source_url_hash(source_url: str) -> str:
     return hashlib.sha256(source_url.encode("utf-8")).hexdigest()
 
 
-def column_exists(cursor: Any, table: str, column: str) -> bool:
-    cursor.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-          AND column_name = %s
-        """,
-        (table, column),
+def supabase_url() -> str:
+    return (os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or "").strip().rstrip("/")
+
+
+def supabase_key() -> str:
+    return (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or os.getenv("VITE_SUPABASE_ANON_KEY")
+        or ""
+    ).strip()
+
+
+def supabase_storage_bucket() -> str:
+    return (os.getenv("SUPABASE_STORAGE_BUCKET") or "recipe-images").strip()
+
+
+def is_external_image_url(url: str | None) -> bool:
+    if not url:
+        return False
+    return (
+        "/storage/v1/object/public/" in url
+        or (url.startswith("http") and "/api/recipes/" not in url and "/api/explore/recipes/" not in url)
     )
-    row = cursor.fetchone()
-    return bool(row[0] if isinstance(row, tuple) else row["count"])
 
 
-def index_exists(cursor: Any, table: str, index_name: str) -> bool:
-    cursor.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE()
-          AND table_name = %s
-          AND index_name = %s
-        """,
-        (table, index_name),
-    )
-    row = cursor.fetchone()
-    return bool(row[0] if isinstance(row, tuple) else row["count"])
+def upload_to_supabase_storage(recipe_id: str, image_data: bytes, content_type: str) -> str | None:
+    base_url = supabase_url()
+    key = supabase_key()
+    if not base_url or not key:
+        return None
 
+    bucket = supabase_storage_bucket()
+    clean_type = content_type.split(";", 1)[0].strip().lower()
+    suffix = ".png" if clean_type == "image/png" else ".webp" if clean_type == "image/webp" else ".jpg"
+    filename = f"{recipe_id}{suffix}"
+    object_url = f"{base_url}/storage/v1/object/{bucket}/{filename}"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
+        "Content-Type": clean_type or "image/jpeg",
+        "x-upsert": "true",
+    }
 
-def constraint_exists(cursor: Any, constraint_name: str) -> bool:
-    cursor.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM information_schema.table_constraints
-        WHERE table_schema = DATABASE()
-          AND constraint_name = %s
-        """,
-        (constraint_name,),
-    )
-    row = cursor.fetchone()
-    return bool(row[0] if isinstance(row, tuple) else row["count"])
+    try:
+        resp = requests.post(object_url, data=image_data, headers=headers, timeout=30)
+        if resp.status_code in (400, 404) and "Bucket not found" in resp.text:
+            # Intentar crear el bucket publico automaticamente si la key tiene permisos
+            requests.post(
+                f"{base_url}/storage/v1/bucket",
+                json={"id": bucket, "name": bucket, "public": True},
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "apikey": key,
+                    "Content-Type": "application/json",
+                },
+                timeout=15,
+            )
+            resp = requests.post(object_url, data=image_data, headers=headers, timeout=30)
+
+        if resp.ok:
+            return f"{base_url}/storage/v1/object/public/{bucket}/{filename}"
+        print(f"Advertencia Supabase Storage ({resp.status_code}): {resp.text[:300]}")
+    except Exception as exc:
+        print(f"No se pudo subir imagen a Supabase Storage: {exc}")
+
+    return None
 
 
 def init_database() -> None:
-    database_name = os.getenv("MYSQL_DATABASE") or os.getenv("DB_NAME") or "ratatouille"
-
-    with mysql_connection(include_database=False) as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            f"CREATE DATABASE IF NOT EXISTS `{database_name}` "
-            "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-        )
-
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
             """
@@ -307,31 +354,26 @@ def init_database() -> None:
                 email VARCHAR(255) NOT NULL,
                 name VARCHAR(255) NULL,
                 picture_url TEXT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_users_email (email)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_login_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
             """
         )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)")
         cursor.execute(
             """
             INSERT INTO users (id, google_sub, email, name)
-            VALUES ('legacy-user', 'legacy-default-user', 'legacy@ratatouille.local', 'Legacy User')
-            ON DUPLICATE KEY UPDATE id = id
-            """
-        )
-        cursor.execute(
-            """
-            INSERT INTO users (id, google_sub, email, name)
-            VALUES ('public-user', 'public-recipes', 'public@ratatouille.local', 'Public Recipes')
-            ON DUPLICATE KEY UPDATE id = id
+            VALUES
+                ('legacy-user', 'legacy-default-user', 'legacy@ratatouille.local', 'Legacy User'),
+                ('public-user', 'public-recipes', 'public@ratatouille.local', 'Public Recipes')
+            ON CONFLICT (id) DO NOTHING
             """
         )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS recipes (
                 id VARCHAR(80) PRIMARY KEY,
-                user_id VARCHAR(80) NULL,
+                user_id VARCHAR(80) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 visibility VARCHAR(20) NOT NULL DEFAULT 'private',
                 title VARCHAR(255) NOT NULL,
                 source_url TEXT NOT NULL,
@@ -342,124 +384,75 @@ def init_database() -> None:
                 cook_time VARCHAR(100) NULL,
                 transcript_summary TEXT NULL,
                 image_url TEXT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uniq_recipes_user_source UNIQUE (user_id, source_url_hash)
+            )
             """
         )
-        if not column_exists(cursor, "recipes", "user_id"):
-            cursor.execute("ALTER TABLE recipes ADD COLUMN user_id VARCHAR(80) NULL AFTER id")
-        if not column_exists(cursor, "recipes", "visibility"):
-            cursor.execute("ALTER TABLE recipes ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'private' AFTER user_id")
-        cursor.execute("UPDATE recipes SET user_id = 'legacy-user' WHERE user_id IS NULL")
-        cursor.execute("UPDATE recipes SET visibility = 'private' WHERE visibility IS NULL OR visibility = ''")
-        cursor.execute("ALTER TABLE recipes MODIFY COLUMN user_id VARCHAR(80) NOT NULL")
-        if index_exists(cursor, "recipes", "source_url_hash"):
-            cursor.execute("ALTER TABLE recipes DROP INDEX source_url_hash")
-        if not index_exists(cursor, "recipes", "uniq_recipes_user_source"):
-            cursor.execute("ALTER TABLE recipes ADD UNIQUE KEY uniq_recipes_user_source (user_id, source_url_hash)")
-        if not index_exists(cursor, "recipes", "idx_recipes_user_updated"):
-            cursor.execute("ALTER TABLE recipes ADD INDEX idx_recipes_user_updated (user_id, updated_at)")
-        if not index_exists(cursor, "recipes", "idx_recipes_visibility_updated"):
-            cursor.execute("ALTER TABLE recipes ADD INDEX idx_recipes_visibility_updated (visibility, updated_at)")
-        if not constraint_exists(cursor, "fk_recipes_user"):
-            cursor.execute(
-                """
-                ALTER TABLE recipes
-                ADD CONSTRAINT fk_recipes_user
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                    ON DELETE CASCADE
-                """
-            )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recipes_user_updated ON recipes (user_id, updated_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recipes_visibility_updated ON recipes (visibility, updated_at DESC)")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS recipe_ingredients (
-                recipe_id VARCHAR(80) NOT NULL,
+                recipe_id VARCHAR(80) NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
                 ingredient_id VARCHAR(80) NOT NULL,
                 position INT NOT NULL,
                 text TEXT NOT NULL,
                 checked BOOLEAN NOT NULL DEFAULT FALSE,
-                PRIMARY KEY (recipe_id, ingredient_id),
-                CONSTRAINT fk_recipe_ingredients_recipe
-                    FOREIGN KEY (recipe_id) REFERENCES recipes(id)
-                    ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                PRIMARY KEY (recipe_id, ingredient_id)
+            )
             """
         )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS recipe_steps (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                recipe_id VARCHAR(80) NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
+                recipe_id VARCHAR(80) NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
                 position INT NOT NULL,
-                text TEXT NOT NULL,
-                INDEX idx_recipe_steps_recipe (recipe_id),
-                CONSTRAINT fk_recipe_steps_recipe
-                    FOREIGN KEY (recipe_id) REFERENCES recipes(id)
-                    ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                text TEXT NOT NULL
+            )
             """
         )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recipe_steps_recipe ON recipe_steps (recipe_id, position ASC)")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS recipe_notes (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                recipe_id VARCHAR(80) NOT NULL,
+                id BIGSERIAL PRIMARY KEY,
+                recipe_id VARCHAR(80) NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
                 position INT NOT NULL,
-                text TEXT NOT NULL,
-                INDEX idx_recipe_notes_recipe (recipe_id),
-                CONSTRAINT fk_recipe_notes_recipe
-                    FOREIGN KEY (recipe_id) REFERENCES recipes(id)
-                    ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                text TEXT NOT NULL
+            )
             """
         )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recipe_notes_recipe ON recipe_notes (recipe_id, position ASC)")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS recipe_images (
-                recipe_id VARCHAR(80) PRIMARY KEY,
+                recipe_id VARCHAR(80) PRIMARY KEY REFERENCES recipes(id) ON DELETE CASCADE,
                 mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
-                image_data LONGBLOB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                CONSTRAINT fk_recipe_images_recipe
-                    FOREIGN KEY (recipe_id) REFERENCES recipes(id)
-                    ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                image_data BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
             """
         )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS subscriptions (
-                user_id VARCHAR(80) PRIMARY KEY,
+                user_id VARCHAR(80) PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 plan VARCHAR(50) NOT NULL DEFAULT 'Gratuito',
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                CONSTRAINT fk_subscriptions_user
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                    ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
             """
         )
-        if column_exists(cursor, "subscriptions", "id") and not column_exists(cursor, "subscriptions", "user_id"):
-            cursor.execute("ALTER TABLE subscriptions CHANGE COLUMN id user_id VARCHAR(80) NOT NULL")
-        if not constraint_exists(cursor, "fk_subscriptions_user"):
-            cursor.execute("UPDATE subscriptions SET user_id = 'legacy-user' WHERE user_id = 'default-user'")
-            cursor.execute(
-                """
-                ALTER TABLE subscriptions
-                ADD CONSTRAINT fk_subscriptions_user
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                    ON DELETE CASCADE
-                """
-            )
         cursor.execute(
             """
             INSERT INTO subscriptions (user_id, plan)
             VALUES ('legacy-user', 'Gratuito')
-            ON DUPLICATE KEY UPDATE user_id = user_id
+            ON CONFLICT (user_id) DO NOTHING
             """
         )
-        backfill_recipe_images_from_files(connection)
 
 
 @app.on_event("startup")
@@ -472,7 +465,7 @@ def startup() -> None:
     except HTTPException as exc:
         DATABASE_READY = False
         DATABASE_ERROR = str(exc.detail)
-        print(f"MySQL no esta listo: {DATABASE_ERROR}")
+        print(f"PostgreSQL (Supabase) no esta listo: {DATABASE_ERROR}")
 
 
 def ensure_database_ready() -> None:
@@ -518,10 +511,10 @@ def user_from_row(row: dict[str, Any]) -> User:
 def get_user_by_id(user_id: str, connection: Any | None = None) -> User | None:
     close_connection = connection is None
     if connection is None:
-        connection = mysql.connector.connect(**get_mysql_settings())
+        connection = open_db_connection()
 
     try:
-        cursor = connection.cursor(dictionary=True)
+        cursor = dict_cursor(connection)
         cursor.execute("SELECT id, email, name, picture_url FROM users WHERE id = %s", (user_id,))
         row = cursor.fetchone()
         return user_from_row(row) if row else None
@@ -541,17 +534,17 @@ def get_or_create_google_user(profile: dict[str, Any]) -> User:
     picture_url = str(profile.get("picture") or "").strip() or None
     user_id = f"user-{hashlib.sha256(f'google:{google_sub}'.encode('utf-8')).hexdigest()[:24]}"
 
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
             """
-            INSERT INTO users (id, google_sub, email, name, picture_url)
-            VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                email = VALUES(email),
-                name = VALUES(name),
-                picture_url = VALUES(picture_url),
-                last_login_at = CURRENT_TIMESTAMP
+            INSERT INTO users (id, google_sub, email, name, picture_url, last_login_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                email = EXCLUDED.email,
+                name = EXCLUDED.name,
+                picture_url = EXCLUDED.picture_url,
+                last_login_at = NOW()
             """,
             (user_id, google_sub, email, name, picture_url),
         )
@@ -559,7 +552,7 @@ def get_or_create_google_user(profile: dict[str, Any]) -> User:
             """
             INSERT INTO subscriptions (user_id, plan)
             VALUES (%s, 'Gratuito')
-            ON DUPLICATE KEY UPDATE user_id = user_id
+            ON CONFLICT (user_id) DO NOTHING
             """,
             (user_id,),
         )
@@ -605,7 +598,7 @@ def optional_current_user(authorization: str | None = Header(default=None)) -> U
 
 def user_from_access_token(token: str) -> User:
     user_id = verify_access_token(token)
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         user = get_user_by_id(user_id, connection)
         if user is None:
             raise HTTPException(status_code=401, detail="Usuario no encontrado.")
@@ -650,39 +643,64 @@ def static_image_path_from_url(image_url: str | None, recipe_id: str | None = No
     return None
 
 
-def save_recipe_image_file(recipe_id: str, image_path: Path, connection: Any | None = None) -> None:
+def save_recipe_image_bytes(
+    recipe_id: str,
+    image_data: bytes,
+    content_type: str,
+    connection: Any | None = None,
+) -> str:
+    mime_type = content_type.split(";", 1)[0].strip().lower() or "image/jpeg"
+    storage_public_url = upload_to_supabase_storage(recipe_id, image_data, mime_type)
+
     close_connection = connection is None
     if connection is None:
-        connection = mysql.connector.connect(**get_mysql_settings())
+        connection = open_db_connection()
 
     try:
-        image_data = image_path.read_bytes()
-        suffix = image_path.suffix.lower()
-        mime_type = "image/png" if suffix == ".png" else "image/webp" if suffix == ".webp" else "image/jpeg"
         cursor = connection.cursor()
+        if storage_public_url:
+            cursor.execute(
+                "UPDATE recipes SET image_url = %s, updated_at = NOW() WHERE id = %s",
+                (storage_public_url, recipe_id),
+            )
+            if close_connection:
+                connection.commit()
+            return storage_public_url
+
         cursor.execute(
             """
-            INSERT INTO recipe_images (recipe_id, mime_type, image_data)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                mime_type = VALUES(mime_type),
-                image_data = VALUES(image_data)
+            INSERT INTO recipe_images (recipe_id, mime_type, image_data, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (recipe_id) DO UPDATE SET
+                mime_type = EXCLUDED.mime_type,
+                image_data = EXCLUDED.image_data,
+                updated_at = NOW()
             """,
-            (recipe_id, mime_type, image_data),
+            (recipe_id, mime_type, psycopg2.Binary(image_data)),
         )
         cursor.execute("SELECT visibility FROM recipes WHERE id = %s", (recipe_id,))
         recipe_row = cursor.fetchone()
+        visibility = "private"
         if recipe_row:
             visibility = recipe_row[0] if isinstance(recipe_row, tuple) else recipe_row["visibility"]
-            cursor.execute(
-                "UPDATE recipes SET image_url = %s WHERE id = %s",
-                (recipe_image_url(recipe_id, visibility == "public"), recipe_id),
-            )
+        fallback_url = recipe_image_url(recipe_id, visibility == "public")
+        cursor.execute(
+            "UPDATE recipes SET image_url = %s, updated_at = NOW() WHERE id = %s",
+            (fallback_url, recipe_id),
+        )
         if close_connection:
             connection.commit()
+        return fallback_url
     finally:
         if close_connection:
             connection.close()
+
+
+def save_recipe_image_file(recipe_id: str, image_path: Path, connection: Any | None = None) -> None:
+    image_data = image_path.read_bytes()
+    suffix = image_path.suffix.lower()
+    mime_type = "image/png" if suffix == ".png" else "image/webp" if suffix == ".webp" else "image/jpeg"
+    save_recipe_image_bytes(recipe_id, image_data, mime_type, connection)
 
 
 def write_image_bytes(recipe_id: str, image_data: bytes, content_type: str) -> Path:
@@ -820,7 +838,7 @@ def generate_horde_image(prompt: str) -> tuple[bytes, str]:
 
 
 def backfill_recipe_images_from_files(connection: Any) -> None:
-    cursor = connection.cursor(dictionary=True)
+    cursor = dict_cursor(connection)
     cursor.execute(
         """
         SELECT recipes.id, recipes.image_url
@@ -832,6 +850,8 @@ def backfill_recipe_images_from_files(connection: Any) -> None:
         """
     )
     for row in cursor.fetchall():
+        if is_external_image_url(row["image_url"]):
+            continue
         image_path = static_image_path_from_url(row["image_url"], row["id"])
         if image_path:
             save_recipe_image_file(row["id"], image_path, connection)
@@ -840,29 +860,40 @@ def backfill_recipe_images_from_files(connection: Any) -> None:
 def load_recipe(recipe_id: str, user_id: str, connection: Any | None = None) -> Recipe | None:
     close_connection = connection is None
     if connection is None:
-        connection = mysql.connector.connect(**get_mysql_settings())
+        connection = open_db_connection()
 
     try:
         backfilled_image = False
-        cursor = connection.cursor(dictionary=True)
+        cursor = dict_cursor(connection)
         cursor.execute("SELECT * FROM recipes WHERE id = %s AND user_id = %s", (recipe_id, user_id))
         row = cursor.fetchone()
         if not row:
             return None
 
         recipe = recipe_from_row(row)
-        cursor.execute("SELECT 1 FROM recipe_images WHERE recipe_id = %s", (recipe.id,))
-        has_image = cursor.fetchone() is not None
-        if not has_image:
-            image_path = static_image_path_from_url(row.get("image_url"), recipe.id)
-            if image_path:
-                save_recipe_image_file(recipe.id, image_path, connection)
-                has_image = True
-                backfilled_image = True
-        if has_image:
-            recipe.imageUrl = recipe_image_url(recipe.id, row.get("visibility") == "public")
+        stored_image_url = row.get("image_url")
+        if is_external_image_url(stored_image_url):
+            recipe.imageUrl = stored_image_url
         else:
-            recipe.imageUrl = None
+            cursor.execute("SELECT 1 FROM recipe_images WHERE recipe_id = %s", (recipe.id,))
+            has_image = cursor.fetchone() is not None
+            if not has_image:
+                image_path = static_image_path_from_url(stored_image_url, recipe.id)
+                if image_path:
+                    save_recipe_image_file(recipe.id, image_path, connection)
+                    has_image = True
+                    backfilled_image = True
+            if has_image:
+                # Re-leer por si se subio a Supabase Storage durante el backfill
+                cursor.execute("SELECT image_url FROM recipes WHERE id = %s", (recipe.id,))
+                updated_row = cursor.fetchone()
+                updated_url = updated_row.get("image_url") if updated_row else None
+                if is_external_image_url(updated_url):
+                    recipe.imageUrl = updated_url
+                else:
+                    recipe.imageUrl = recipe_image_url(recipe.id, row.get("visibility") == "public")
+            else:
+                recipe.imageUrl = None
 
         cursor.execute(
             """
@@ -897,8 +928,8 @@ def load_recipe(recipe_id: str, user_id: str, connection: Any | None = None) -> 
 
 def load_recipes(user_id: str) -> list[Recipe]:
     ensure_database_ready()
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
+    with db_connection() as connection:
+        cursor = dict_cursor(connection)
         cursor.execute(
             "SELECT id FROM recipes WHERE user_id = %s ORDER BY updated_at DESC LIMIT 50",
             (user_id,),
@@ -912,8 +943,8 @@ def load_recipes(user_id: str) -> list[Recipe]:
 
 def load_public_recipes() -> list[Recipe]:
     ensure_database_ready()
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
+    with db_connection() as connection:
+        cursor = dict_cursor(connection)
         cursor.execute(
             """
             SELECT id
@@ -935,7 +966,7 @@ def save_recipe(recipe: Recipe, user_id: str, visibility: str = "private") -> Re
     if visibility not in {"public", "private"}:
         raise HTTPException(status_code=422, detail="Visibilidad de receta invalida.")
 
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         recipe_source_hash = source_url_hash(recipe.sourceUrl)
         cursor.execute(
@@ -950,21 +981,22 @@ def save_recipe(recipe: Recipe, user_id: str, visibility: str = "private") -> Re
             """
             INSERT INTO recipes (
                 id, user_id, visibility, title, source_url, source_url_hash, platform, servings,
-                prep_time, cook_time, transcript_summary, image_url
+                prep_time, cook_time, transcript_summary, image_url, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                user_id = VALUES(user_id),
-                visibility = VALUES(visibility),
-                title = VALUES(title),
-                source_url = VALUES(source_url),
-                source_url_hash = VALUES(source_url_hash),
-                platform = VALUES(platform),
-                servings = VALUES(servings),
-                prep_time = VALUES(prep_time),
-                cook_time = VALUES(cook_time),
-                transcript_summary = VALUES(transcript_summary),
-                image_url = VALUES(image_url)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                visibility = EXCLUDED.visibility,
+                title = EXCLUDED.title,
+                source_url = EXCLUDED.source_url,
+                source_url_hash = EXCLUDED.source_url_hash,
+                platform = EXCLUDED.platform,
+                servings = EXCLUDED.servings,
+                prep_time = EXCLUDED.prep_time,
+                cook_time = EXCLUDED.cook_time,
+                transcript_summary = EXCLUDED.transcript_summary,
+                image_url = COALESCE(EXCLUDED.image_url, recipes.image_url),
+                updated_at = NOW()
             """,
             (
                 recipe.id,
@@ -1011,14 +1043,15 @@ def save_recipe(recipe: Recipe, user_id: str, visibility: str = "private") -> Re
 
 def update_ingredient_progress(user_id: str, recipe_id: str, ingredient_id: str, checked: bool) -> Recipe:
     ensure_database_ready()
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
             """
             UPDATE recipe_ingredients
-            INNER JOIN recipes ON recipes.id = recipe_ingredients.recipe_id
-            SET recipe_ingredients.checked = %s
-            WHERE recipe_ingredients.recipe_id = %s
+            SET checked = %s
+            FROM recipes
+            WHERE recipes.id = recipe_ingredients.recipe_id
+              AND recipe_ingredients.recipe_id = %s
               AND recipe_ingredients.ingredient_id = %s
               AND recipes.user_id = %s
             """,
@@ -1034,8 +1067,8 @@ def update_ingredient_progress(user_id: str, recipe_id: str, ingredient_id: str,
 
 def get_subscription(user_id: str) -> Subscription:
     ensure_database_ready()
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
+    with db_connection() as connection:
+        cursor = dict_cursor(connection)
         cursor.execute("SELECT plan FROM subscriptions WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         return Subscription(plan=row["plan"] if row else "Gratuito")
@@ -1051,23 +1084,34 @@ def save_subscription(user_id: str, plan: str) -> Subscription:
         raise HTTPException(status_code=422, detail="Plan de suscripcion invalido.")
 
     ensure_database_ready()
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
             """
-            INSERT INTO subscriptions (user_id, plan)
-            VALUES (%s, %s)
-            ON DUPLICATE KEY UPDATE plan = VALUES(plan)
+            INSERT INTO subscriptions (user_id, plan, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                plan = EXCLUDED.plan,
+                updated_at = NOW()
             """,
             (user_id, plan),
         )
     return Subscription(plan=plan)
 
 
-def load_recipe_image(user_id: str, recipe_id: str) -> tuple[bytes, str]:
+def load_recipe_image(user_id: str, recipe_id: str) -> tuple[bytes | None, str, str | None]:
+    """Devuelve (image_bytes, mime_type, redirect_url)."""
     ensure_database_ready()
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
+    with db_connection() as connection:
+        cursor = dict_cursor(connection)
+        cursor.execute(
+            "SELECT image_url FROM recipes WHERE id = %s AND user_id = %s",
+            (recipe_id, user_id),
+        )
+        recipe_row = cursor.fetchone()
+        if recipe_row and is_external_image_url(recipe_row.get("image_url")):
+            return None, "", recipe_row["image_url"]
+
         cursor.execute(
             """
             SELECT recipe_images.mime_type, recipe_images.image_data
@@ -1081,13 +1125,26 @@ def load_recipe_image(user_id: str, recipe_id: str) -> tuple[bytes, str]:
         if not row:
             raise HTTPException(status_code=404, detail="Imagen no encontrada.")
 
-        return bytes(row["image_data"]), row["mime_type"]
+        return bytes(row["image_data"]), row["mime_type"], None
 
 
-def load_public_recipe_image(recipe_id: str) -> tuple[bytes, str]:
+def load_public_recipe_image(recipe_id: str) -> tuple[bytes | None, str, str | None]:
+    """Devuelve (image_bytes, mime_type, redirect_url)."""
     ensure_database_ready()
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
+    with db_connection() as connection:
+        cursor = dict_cursor(connection)
+        cursor.execute(
+            """
+            SELECT image_url
+            FROM recipes
+            WHERE id = %s AND user_id = 'public-user' AND visibility = 'public'
+            """,
+            (recipe_id,),
+        )
+        recipe_row = cursor.fetchone()
+        if recipe_row and is_external_image_url(recipe_row.get("image_url")):
+            return None, "", recipe_row["image_url"]
+
         cursor.execute(
             """
             SELECT recipe_images.mime_type, recipe_images.image_data
@@ -1103,14 +1160,14 @@ def load_public_recipe_image(recipe_id: str) -> tuple[bytes, str]:
         if not row:
             raise HTTPException(status_code=404, detail="Imagen no encontrada.")
 
-        return bytes(row["image_data"]), row["mime_type"]
+        return bytes(row["image_data"]), row["mime_type"], None
 
 
 def save_public_recipe_to_user(public_recipe_id: str, user_id: str) -> Recipe:
     if not is_paid_plan(user_id):
         raise HTTPException(status_code=403, detail="Necesitas un plan Gourmet o Chef para guardar recetas de Explore.")
 
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         public_recipe = load_recipe(public_recipe_id, "public-user", connection)
         if public_recipe is None:
             raise HTTPException(status_code=404, detail="Receta publica no encontrada.")
@@ -1118,7 +1175,10 @@ def save_public_recipe_to_user(public_recipe_id: str, user_id: str) -> Recipe:
         private_id = f"recipe-{hashlib.sha256(f'{user_id}:{public_recipe.sourceUrl}:{public_recipe.title}'.encode('utf-8')).hexdigest()[:16]}"
         private_recipe = public_recipe.model_copy(deep=True)
         private_recipe.id = private_id
-        private_recipe.imageUrl = recipe_image_url(private_id)
+        if is_external_image_url(public_recipe.imageUrl):
+            private_recipe.imageUrl = public_recipe.imageUrl
+        else:
+            private_recipe.imageUrl = recipe_image_url(private_id)
         private_recipe.ingredients = [
             Ingredient(id=ingredient.id, text=ingredient.text, checked=False)
             for ingredient in private_recipe.ingredients
@@ -1126,25 +1186,27 @@ def save_public_recipe_to_user(public_recipe_id: str, user_id: str) -> Recipe:
 
     saved_recipe = save_recipe(private_recipe, user_id, "private")
 
-    with mysql_connection() as connection:
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT mime_type, image_data FROM recipe_images WHERE recipe_id = %s",
-            (public_recipe_id,),
-        )
-        image_row = cursor.fetchone()
-        if image_row:
-            cursor = connection.cursor()
+    if not is_external_image_url(private_recipe.imageUrl):
+        with db_connection() as connection:
+            cursor = dict_cursor(connection)
             cursor.execute(
-                """
-                INSERT INTO recipe_images (recipe_id, mime_type, image_data)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    mime_type = VALUES(mime_type),
-                    image_data = VALUES(image_data)
-                """,
-                (private_id, image_row["mime_type"], image_row["image_data"]),
+                "SELECT mime_type, image_data FROM recipe_images WHERE recipe_id = %s",
+                (public_recipe_id,),
             )
+            image_row = cursor.fetchone()
+            if image_row:
+                cursor_write = connection.cursor()
+                cursor_write.execute(
+                    """
+                    INSERT INTO recipe_images (recipe_id, mime_type, image_data, updated_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (recipe_id) DO UPDATE SET
+                        mime_type = EXCLUDED.mime_type,
+                        image_data = EXCLUDED.image_data,
+                        updated_at = NOW()
+                    """,
+                    (private_id, image_row["mime_type"], psycopg2.Binary(bytes(image_row["image_data"]))),
+                )
 
     reloaded_recipe = load_recipe(saved_recipe.id, user_id)
     return reloaded_recipe or saved_recipe
@@ -1155,7 +1217,7 @@ def get_groq_client() -> Groq:
     if not api_key or api_key == "tu_api_key_aqui":
         raise HTTPException(
             status_code=500,
-            detail="Falta GROQ_API_KEY. Definela en run.bat, .env o en las variables de entorno.",
+            detail="Falta GROQ_API_KEY. Definela en .env o en las variables de entorno.",
         )
     return Groq(api_key=api_key)
 
@@ -1181,15 +1243,17 @@ def get_ffmpeg_location() -> str:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail="ffmpeg no esta disponible. Ejecuta setup.bat para instalar el FFmpeg local de la app.",
+            detail="ffmpeg no esta disponible en el sistema.",
         ) from exc
 
 
-def download_audio(url: str, work_dir: Path) -> Path:
+def download_audio_with_metadata(url: str, work_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """Descarga exclusivamente el flujo de audio (sin video) y extrae los metadatos del post."""
     ffmpeg_location = get_ffmpeg_location()
     output_template = str(work_dir / "source.%(ext)s")
     options: dict[str, Any] = {
-        "format": "bestaudio/best",
+        # Prioriza audio puro de bajo peso (m4a/webm/opus) sin bajar video
+        "format": "ba[ext=m4a]/ba/bestaudio/best",
         "outtmpl": output_template,
         "ffmpeg_location": ffmpeg_location,
         "http_headers": {
@@ -1204,6 +1268,7 @@ def download_audio(url: str, work_dir: Path) -> Path:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "playlist_items": "1",
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -1214,16 +1279,31 @@ def download_audio(url: str, work_dir: Path) -> Path:
         "postprocessor_args": ["-ac", "1", "-ar", "16000"],
     }
 
+    # Soporte opcional de cookies (para evitar bloqueos 429 en datacenters como HF Spaces)
+    cookies_content = os.getenv("YTDLP_COOKIES", "").strip()
+    if cookies_content:
+        cookie_file = work_dir / "cookies.txt"
+        cookie_file.write_text(cookies_content, encoding="utf-8")
+        options["cookiefile"] = str(cookie_file)
+
+    metadata: dict[str, Any] = {}
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            if isinstance(info, dict):
+                metadata = {
+                    "title": str(info.get("title") or "").strip(),
+                    "description": str(info.get("description") or "").strip(),
+                    "thumbnail": str(info.get("thumbnail") or "").strip(),
+                    "duration": info.get("duration"),
+                }
     except yt_dlp.utils.DownloadError as exc:
         error_text = str(exc)
         if "HTTP Error 429" in error_text or "Too Many Requests" in error_text:
             raise HTTPException(
                 status_code=429,
                 detail=(
-                    "TikTok esta limitando temporalmente la descarga de este video. "
+                    "La plataforma esta limitando temporalmente la descarga de este video. "
                     "Espera unos minutos o prueba con el enlace completo desde Compartir > Copiar enlace."
                 ),
             ) from exc
@@ -1242,10 +1322,15 @@ def download_audio(url: str, work_dir: Path) -> Path:
             status_code=413,
             detail="El audio supera 25MB. Usa videos mas cortos, idealmente de menos de 10 minutos.",
         )
+    return audio_path, metadata
+
+
+def download_audio(url: str, work_dir: Path) -> Path:
+    audio_path, _ = download_audio_with_metadata(url, work_dir)
     return audio_path
 
 
-def transcribe_audio(client: Groq, audio_path: Path) -> str:
+def transcribe_audio(client: Groq, audio_path: Path, allow_short: bool = False) -> str:
     try:
         with audio_path.open("rb") as audio_file:
             transcription = client.audio.transcriptions.create(
@@ -1268,10 +1353,10 @@ def transcribe_audio(client: Groq, audio_path: Path) -> str:
         ) from exc
 
     text = str(transcription).strip()
-    if len(text) < 20:
+    if len(text) < 20 and not allow_short:
         raise HTTPException(
             status_code=422,
-            detail="La transcripcion fue demasiado corta. El video debe tener narracion clara de una receta.",
+            detail="La transcripcion fue demasiado corta. El video debe tener narracion clara o descripcion con la receta.",
         )
     return text
 
@@ -1301,10 +1386,35 @@ def normalize_ingredients(items: list[Any]) -> list[Ingredient]:
     return ingredients
 
 
-def extract_recipe(client: Groq, transcript: str, source_url: str) -> Recipe:
+def extract_recipe(
+    client: Groq,
+    transcript: str,
+    source_url: str,
+    video_metadata: dict[str, Any] | None = None,
+) -> Recipe:
     platform = detect_platform(source_url)
+    meta = video_metadata or {}
+    video_title = str(meta.get("title") or "").strip()
+    video_description = str(meta.get("description") or "").strip()
+
+    if len(transcript.strip()) < 15 and len(video_description) < 15:
+        raise HTTPException(
+            status_code=422,
+            detail="El video no tiene narracion hablada ni descripcion con ingredientes suficientes para extraer la receta.",
+        )
+
+    context_sections = []
+    if video_title:
+        context_sections.append(f"Titulo del video:\n{video_title}")
+    if video_description:
+        context_sections.append(f"Descripcion del post / video:\n{video_description[:3000]}")
+    if transcript.strip():
+        context_sections.append(f"Transcripcion de audio:\n{transcript}")
+
+    combined_source = "\n\n".join(context_sections)
+
     prompt = f"""
-Extrae una receta desde esta transcripcion de un video de cocina.
+Extrae una receta culinaria completa a partir de la informacion del siguiente video de cocina (transcripcion de audio y/o descripcion del post).
 
 Devuelve SOLO JSON valido con esta forma exacta:
 {{
@@ -1319,13 +1429,17 @@ Devuelve SOLO JSON valido con esta forma exacta:
 }}
 
 Reglas:
+- Combina lo que se dice en el audio con los detalles o cantidades exactas que aparezcan en la descripcion del post.
 - Si no hay una receta reconocible, usa title "No se encontro receta" y deja ingredients/steps vacios.
-- No inventes cantidades especificas si la transcripcion no las menciona; usa frases como "cantidad al gusto".
+- No inventes cantidades especificas si no se mencionan; usa frases como "cantidad al gusto".
 - Escribe todo en espanol natural.
 
-Transcripcion:
-{transcript}
+Informacion del video:
+{combined_source}
 """.strip()
+
+    data: dict[str, Any] | None = None
+    gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 
     try:
         completion = client.chat.completions.create(
@@ -1333,7 +1447,7 @@ Transcripcion:
             messages=[
                 {
                     "role": "system",
-                    "content": "Eres un chef editor que convierte transcripciones en recetas estructuradas y devuelve JSON valido.",
+                    "content": "Eres un chef editor que convierte transcripciones y descripciones de videos en recetas estructuradas y devuelve JSON valido.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -1342,17 +1456,28 @@ Transcripcion:
         )
         content = completion.choices[0].message.content or "{}"
         data = extract_json(content)
-    except Exception as exc:
-        error_text = str(exc)
-        if "invalid_api_key" in error_text or "Error code: 401" in error_text:
+    except Exception as groq_exc:
+        if gemini_key:
+            try:
+                gemini_client = genai.Client(api_key=gemini_key)
+                gemini_resp = gemini_client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=prompt,
+                )
+                data = extract_json(gemini_resp.text or "{}")
+            except Exception:
+                pass
+        if data is None:
+            error_text = str(groq_exc)
+            if "invalid_api_key" in error_text or "Error code: 401" in error_text:
+                raise HTTPException(
+                    status_code=401,
+                    detail="La API key de Groq es invalida o fue revocada. Revisa GROQ_API_KEY en .env.",
+                ) from groq_exc
             raise HTTPException(
-                status_code=401,
-                detail="La API key de Groq es invalida o fue revocada. Revisa GROQ_API_KEY en .env.",
-            ) from exc
-        raise HTTPException(
-            status_code=502,
-            detail="Groq no pudo extraer la receta desde la transcripcion.",
-        ) from exc
+                status_code=502,
+                detail="No se pudo estructurar la receta desde la transcripcion.",
+            ) from groq_exc
 
     raw_ingredients = data.get("ingredients") or []
     raw_steps = data.get("steps") or []
@@ -1362,7 +1487,7 @@ Transcripcion:
     if not ingredients or not steps:
         raise HTTPException(
             status_code=422,
-            detail="No se encontro una receta clara. Prueba con un video que tenga ingredientes y pasos narrados.",
+            detail="No se encontro una receta clara. Prueba con un video que tenga ingredientes y pasos narrados o en la descripcion.",
         )
 
     title = str(data.get("title") or "Receta extraida").strip()
@@ -1392,6 +1517,7 @@ def health() -> dict[str, str | bool]:
         "app": APP_NAME,
         "databaseReady": DATABASE_READY,
         "databaseError": DATABASE_ERROR,
+        "storageConfigured": bool(supabase_url() and supabase_key()),
     }
 
 
@@ -1419,7 +1545,7 @@ def get_explore_recipes(user: User = Depends(current_user)) -> list[Recipe]:
 @app.delete("/api/recipes")
 def delete_all_recipes(user: User = Depends(current_user)) -> Response:
     ensure_database_ready()
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute("DELETE FROM recipes WHERE user_id = %s", (user.id,))
     return Response(status_code=204)
@@ -1428,7 +1554,7 @@ def delete_all_recipes(user: User = Depends(current_user)) -> Response:
 @app.delete("/api/recipes/{recipe_id}")
 def delete_saved_recipe(recipe_id: str, user: User = Depends(current_user)) -> Response:
     ensure_database_ready()
-    with mysql_connection() as connection:
+    with db_connection() as connection:
         cursor = connection.cursor()
         cursor.execute("DELETE FROM recipes WHERE id = %s AND user_id = %s", (recipe_id, user.id))
         if cursor.rowcount == 0:
@@ -1452,13 +1578,17 @@ def get_saved_recipe_image(
     if not token:
         raise HTTPException(status_code=401, detail="Debes iniciar sesion.")
     user = user_from_access_token(token)
-    image_data, mime_type = load_recipe_image(user.id, recipe_id)
+    image_data, mime_type, redirect_url = load_recipe_image(user.id, recipe_id)
+    if redirect_url:
+        return RedirectResponse(url=redirect_url, status_code=302)
     return Response(content=image_data, media_type=mime_type)
 
 
 @app.get("/api/explore/recipes/{recipe_id}/image")
 def get_public_recipe_image(recipe_id: str) -> Response:
-    image_data, mime_type = load_public_recipe_image(recipe_id)
+    image_data, mime_type, redirect_url = load_public_recipe_image(recipe_id)
+    if redirect_url:
+        return RedirectResponse(url=redirect_url, status_code=302)
     return Response(content=image_data, media_type=mime_type)
 
 
@@ -1482,7 +1612,7 @@ def update_saved_subscription(payload: Subscription, user: User = Depends(curren
     return save_subscription(user.id, payload.plan)
 
 
-def generate_recipe_image(title: str, recipe_id: str, is_public: bool = False) -> tuple[str, Path] | None:
+def generate_recipe_image_bytes(title: str, recipe_id: str, fallback_thumbnail_url: str | None = None) -> tuple[bytes, str] | None:
     prompt = f"Professional food photography of {title}, high quality, cinematic lighting, appetizing, highly detailed"
     provider_errors: list[str] = []
 
@@ -1492,12 +1622,19 @@ def generate_recipe_image(title: str, recipe_id: str, is_public: bool = False) -
     ):
         try:
             image_data, content_type = generator(prompt)
-            image_path = write_image_bytes(recipe_id, image_data, content_type)
             print(f"Imagen generada con {provider_name}: {recipe_id}")
-            return recipe_image_url(recipe_id, is_public), image_path
+            return image_data, content_type
         except Exception as exc:
             provider_errors.append(f"{provider_name}: {exc}")
             print(f"Error generando imagen con {provider_name}: {exc}")
+
+    if fallback_thumbnail_url:
+        try:
+            image_data, content_type = fetch_image_bytes(fallback_thumbnail_url, timeout=20)
+            print(f"Usando miniatura original del video para {recipe_id}")
+            return image_data, content_type
+        except Exception as exc:
+            provider_errors.append(f"Thumbnail: {exc}")
 
     print(f"No se pudo generar imagen para {recipe_id}. {' | '.join(provider_errors)}")
     return None
@@ -1507,8 +1644,8 @@ def find_existing_recipe_by_url(source_url: str, owner_id: str) -> Recipe | None
     """Busca en la DB si ya existe una receta con el mismo source_url para el owner dado."""
     url_hash = source_url_hash(source_url)
     try:
-        with mysql_connection() as connection:
-            cursor = connection.cursor(dictionary=True)
+        with db_connection() as connection:
+            cursor = dict_cursor(connection)
             cursor.execute(
                 "SELECT id FROM recipes WHERE user_id = %s AND source_url_hash = %s",
                 (owner_id, url_hash),
@@ -1532,10 +1669,10 @@ def extract_from_video(payload: ExtractRequest, user: User | None = Depends(opti
     existing_recipe = find_existing_recipe_by_url(source_url, owner_id)
     if existing_recipe is not None:
         if not existing_recipe.imageUrl:
-            generated_image = generate_recipe_image(existing_recipe.title, existing_recipe.id, owner_id == "public-user")
-            if generated_image:
-                _, image_path = generated_image
-                save_recipe_image_file(existing_recipe.id, image_path)
+            generated = generate_recipe_image_bytes(existing_recipe.title, existing_recipe.id)
+            if generated:
+                image_data, content_type = generated
+                save_recipe_image_bytes(existing_recipe.id, image_data, content_type)
                 reloaded_recipe = load_recipe(existing_recipe.id, owner_id)
                 return reloaded_recipe or existing_recipe
         return existing_recipe
@@ -1543,25 +1680,29 @@ def extract_from_video(payload: ExtractRequest, user: User | None = Depends(opti
     get_ffmpeg_location()
     client = get_groq_client()
 
-    TEMP_ROOT.mkdir(exist_ok=True)
+    TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix="video2recipe-", dir=TEMP_ROOT))
     try:
-        audio_path = download_audio(source_url, Path(temp_dir))
-        transcript = transcribe_audio(client, audio_path)
-        recipe = extract_recipe(client, transcript, source_url)
+        audio_path, video_metadata = download_audio_with_metadata(source_url, Path(temp_dir))
+        has_description = len(str(video_metadata.get("description") or "").strip()) >= 20
+        transcript = transcribe_audio(client, audio_path, allow_short=has_description)
+        recipe = extract_recipe(client, transcript, source_url, video_metadata=video_metadata)
         visibility = "private" if should_save_private else "public"
         recipe_id = hashlib.sha256(f"{owner_id}:{source_url}:{recipe.title}".encode("utf-8")).hexdigest()[:16]
         recipe.id = f"recipe-{recipe_id}"
-        
-        # Intentar generar la imagen de manera segura
-        generated_image = generate_recipe_image(recipe.title, recipe.id, visibility == "public")
-        image_path = None
-        if generated_image:
-            recipe.imageUrl, image_path = generated_image
 
         saved_recipe = save_recipe(recipe, owner_id, visibility)
-        if image_path:
-            save_recipe_image_file(saved_recipe.id, image_path)
+
+        # Generar o rescatar miniatura y subir a Supabase Storage
+        generated = generate_recipe_image_bytes(
+            recipe.title,
+            saved_recipe.id,
+            fallback_thumbnail_url=video_metadata.get("thumbnail"),
+        )
+        if generated:
+            image_data, content_type = generated
+            save_recipe_image_bytes(saved_recipe.id, image_data, content_type)
+
         reloaded_recipe = load_recipe(saved_recipe.id, owner_id)
         return reloaded_recipe or saved_recipe
     finally:

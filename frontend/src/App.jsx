@@ -100,13 +100,22 @@ function App() {
   }, [session]);
 
   const withRecipeScope = useCallback((items, scope, token = session?.accessToken) => {
-    return items.map((recipe) => ({
-      ...recipe,
-      _scope: scope,
-      imageUrl: recipe.imageUrl && scope === "private" && token
-        ? `${API_URL}/api/recipes/${recipe.id}/image?access_token=${encodeURIComponent(token)}`
-        : recipe.imageUrl,
-    }));
+    return items.map((recipe) => {
+      const isDirectCdnUrl =
+        recipe.imageUrl &&
+        recipe.imageUrl.startsWith("http") &&
+        !recipe.imageUrl.includes("/api/recipes/") &&
+        !recipe.imageUrl.includes("/api/explore/recipes/");
+
+      return {
+        ...recipe,
+        _scope: scope,
+        imageUrl:
+          recipe.imageUrl && scope === "private" && token && !isDirectCdnUrl
+            ? `${API_URL}/api/recipes/${recipe.id}/image?access_token=${encodeURIComponent(token)}`
+            : recipe.imageUrl,
+      };
+    });
   }, [session?.accessToken]);
 
   useEffect(() => {
