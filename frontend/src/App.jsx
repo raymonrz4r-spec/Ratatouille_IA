@@ -6,7 +6,7 @@ import Patrocinador from "./components/Patrocinador.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import Paypage from "./Paypage.jsx";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8000" : "");
 const SESSION_KEY = "video2recipe.session";
 
 class ApiError extends Error {
@@ -19,14 +19,22 @@ class ApiError extends Error {
 
 async function apiRequest(path, options = {}) {
   const { token, ...fetchOptions } = options;
-  const response = await fetch(`${API_URL}${path}`, {
-    ...fetchOptions,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(fetchOptions.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...fetchOptions,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(fetchOptions.headers || {}),
+      },
+    });
+  } catch {
+    throw new ApiError(
+      "No se pudo conectar con el servidor backend. Verifica que el servicio esté activo.",
+      503
+    );
+  }
 
   if (response.status === 204) return null;
 
