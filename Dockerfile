@@ -28,8 +28,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copiar el código del backend
 COPY --chown=user:user backend ./backend
 
-# Asegurar permisos sobre carpetas temporales y estáticas
-RUN mkdir -p /tmp/ratatouille_tmp /app/backend/static/images && \
+# Asegurar permisos sobre carpeta temporal de procesamiento de audio
+RUN mkdir -p /tmp/ratatouille_tmp && \
     chown -R user:user /tmp/ratatouille_tmp /app/backend
 
 USER user
