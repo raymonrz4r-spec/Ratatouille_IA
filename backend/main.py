@@ -1454,17 +1454,20 @@ Informacion del video:
         try:
             gemini_client = genai.Client(api_key=gemini_key)
             gemini_models = [
+                "gemini-3.1-flash-lite",
                 "gemini-3.8-flash",
                 "gemini-3.1-pro-preview",
+                "gemini-2.5-flash-lite",
                 "gemini-2.5-flash",
-                "gemini-2.0-flash",
             ]
             try:
                 for m in gemini_client.models.list():
                     m_name = getattr(m, "name", "").replace("models/", "")
                     if m_name and m_name not in gemini_models:
-                        if "flash" in m_name.lower():
+                        if "lite" in m_name.lower():
                             gemini_models.insert(0, m_name)
+                        elif "flash" in m_name.lower():
+                            gemini_models.insert(1, m_name)
                         elif "pro" in m_name.lower():
                             gemini_models.append(m_name)
             except Exception as list_err:
