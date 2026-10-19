@@ -5,6 +5,7 @@ import SearchBar from "./components/SearchBar.jsx";
 import Patrocinador from "./components/Patrocinador.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import Paypage from "./Paypage.jsx";
+import LegalModal from "./components/LegalModal.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8000" : "");
 const SESSION_KEY = "video2recipe.session";
@@ -74,6 +75,7 @@ function App() {
   const [userPlan, setUserPlan] = useState(loadSavedPlan);
   const [currentView, setCurrentView] = useState("kitchen"); // "kitchen" or "subscriptions"
   const [selectedRecipeId, setSelectedRecipeId] = useState(null);
+  const [legalModalType, setLegalModalType] = useState(null); // "terms" | "privacy" | null
 
   const selectedRecipe = useMemo(() => {
     return [...recipes, ...exploreRecipes, guestRecipe].filter(Boolean).find((r) => r.id === selectedRecipeId);
@@ -462,7 +464,7 @@ function App() {
         </div>
       </header>
 
-      <main className="flex-grow w-full max-w-container-max mx-auto px-margin-mobile md:px-gutter py-12 flex flex-col gap-12">
+      <main className="flex-grow w-full max-w-container-max mx-auto px-margin-mobile md:px-gutter pt-8 pb-28 md:py-12 flex flex-col gap-12">
         {currentView === "kitchen" ? (
           <>
             <section className="flex flex-col items-center text-center gap-6 animate-fade-in">
@@ -559,11 +561,29 @@ function App() {
         <div className="flex flex-col items-center gap-4 py-12 px-margin-desktop w-full max-w-container-max mx-auto">
           <div className="font-headline-sm text-headline-sm text-secondary">Ratatouille AI</div>
           <p className="font-label-sm text-label-sm text-secondary dark:text-secondary-fixed opacity-80 hover:opacity-100 transition-opacity">© 2026 Ratatouille AI. Crafted for home chefs.</p>
-          <div className="flex gap-6 mt-4">
-            <a className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-tertiary transition-colors" href="#">Privacy Policy</a>
-            <a className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-tertiary transition-colors" href="#">Terms of Service</a>
-            <a className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-tertiary transition-colors" href="#">API Status</a>
-            <a className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-tertiary transition-colors" href="#">Support</a>
+          <div className="flex flex-wrap justify-center gap-6 mt-4">
+            <button
+              type="button"
+              onClick={() => setLegalModalType("privacy")}
+              className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-primary transition-colors cursor-pointer"
+            >
+              Política de Privacidad
+            </button>
+            <button
+              type="button"
+              onClick={() => setLegalModalType("terms")}
+              className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-primary transition-colors cursor-pointer"
+            >
+              Términos de Servicio
+            </button>
+            <a
+              className="font-label-sm text-label-sm text-on-surface-variant/70 hover:text-primary transition-colors"
+              href="https://status.openai.com"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Estado de Servicios
+            </a>
           </div>
         </div>
       </footer>
@@ -713,19 +733,20 @@ function App() {
               ) : null}
             </div>
 
-            {/* Footer Buttons */}
-            <div className="mt-4 flex items-center justify-between gap-3 border-t border-outline-variant/30 dark:border-white/10 pt-6">
+            {/* Footer Buttons - Responsivo sin overflow móvil */}
+            <div className="mt-4 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-3 border-t border-outline-variant/30 dark:border-white/10 pt-6 w-full">
               <a
-                className="inline-flex h-12 items-center gap-2 rounded-full border border-outline/50 dark:border-white/20 px-6 font-label-md text-on-surface dark:text-inverse-on-surface hover:border-primary dark:hover:border-inverse-primary hover:text-primary dark:hover:text-inverse-primary transition"
+                className="inline-flex min-h-[44px] h-12 items-center justify-center gap-2 rounded-full border border-outline/50 dark:border-white/20 px-6 font-label-md text-on-surface dark:text-inverse-on-surface hover:border-primary dark:hover:border-inverse-primary hover:text-primary dark:hover:text-inverse-primary transition w-full sm:w-auto"
                 href={selectedRecipe.sourceUrl}
                 target="_blank"
                 rel="noreferrer"
+                aria-label={`Ver video original de ${selectedRecipe.title}`}
               >
-                <span className="material-symbols-outlined text-[20px]">open_in_new</span>
+                <span className="material-symbols-outlined text-[20px]" aria-hidden="true">open_in_new</span>
                 Ver Video
               </a>
               <button
-                className="inline-flex h-12 items-center gap-2 rounded-full border border-error/50 px-6 font-label-md text-error hover:bg-error hover:text-on-error transition"
+                className="inline-flex min-h-[44px] h-12 items-center justify-center gap-2 rounded-full border border-error/50 px-6 font-label-md text-error hover:bg-error hover:text-on-error transition w-full sm:w-auto"
                 type="button"
                 onClick={() => {
                   if (window.confirm("¿Seguro que deseas eliminar esta receta?")) {
@@ -733,9 +754,10 @@ function App() {
                     setSelectedRecipeId(null);
                   }
                 }}
+                aria-label={`Eliminar receta ${selectedRecipe.title}`}
                 title="Eliminar receta"
               >
-                <span className="material-symbols-outlined text-[20px]">delete</span>
+                <span className="material-symbols-outlined text-[20px]" aria-hidden="true">delete</span>
                 Eliminar
               </button>
             </div>
@@ -744,9 +766,83 @@ function App() {
         </div>
       )}
 
+      {/* Barra de Navegación Inferior Flotante para Móviles */}
+      <nav
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface/90 dark:bg-inverse-surface/90 backdrop-blur-lg border-t border-outline-variant/30 px-3 py-2 flex items-center justify-around shadow-xl"
+        aria-label="Navegación móvil inferior"
+      >
+        <button
+          type="button"
+          onClick={() => setCurrentView("kitchen")}
+          className={`flex flex-col items-center justify-center min-h-[44px] min-w-[56px] px-2 py-1 rounded-xl transition-all ${
+            currentView === "kitchen"
+              ? "text-primary dark:text-inverse-primary font-bold scale-105"
+              : "text-on-surface-variant hover:text-primary"
+          }`}
+          aria-label="Ir a Mi Cocina"
+        >
+          <span className="material-symbols-outlined text-[22px]">skillet</span>
+          <span className="text-[10px] mt-0.5 font-medium">Cocina</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setCurrentView(session?.accessToken ? "explore" : "login")}
+          className={`flex flex-col items-center justify-center min-h-[44px] min-w-[56px] px-2 py-1 rounded-xl transition-all ${
+            currentView === "explore"
+              ? "text-primary dark:text-inverse-primary font-bold scale-105"
+              : "text-on-surface-variant hover:text-primary"
+          }`}
+          aria-label="Ir a Explorar Recetas"
+        >
+          <span className="material-symbols-outlined text-[22px]">explore</span>
+          <span className="text-[10px] mt-0.5 font-medium">Explorar</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setCurrentView("subscriptions")}
+          className={`flex flex-col items-center justify-center min-h-[44px] min-w-[56px] px-2 py-1 rounded-xl transition-all ${
+            currentView === "subscriptions"
+              ? "text-primary dark:text-inverse-primary font-bold scale-105"
+              : "text-on-surface-variant hover:text-primary"
+          }`}
+          aria-label="Ver Planes y Suscripciones"
+        >
+          <span className="material-symbols-outlined text-[22px]">workspace_premium</span>
+          <span className="text-[10px] mt-0.5 font-medium">Planes</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => (session?.accessToken ? handleLogout() : setCurrentView("login"))}
+          className="flex flex-col items-center justify-center min-h-[44px] min-w-[56px] px-2 py-1 rounded-xl text-on-surface-variant hover:text-primary transition-all"
+          aria-label={session?.accessToken ? "Cerrar sesión" : "Iniciar sesión"}
+        >
+          {session?.user?.pictureUrl ? (
+            <img
+              src={session.user.pictureUrl}
+              alt={session.user.name || session.user.email}
+              className="h-5 w-5 rounded-full object-cover border border-primary/40"
+            />
+          ) : (
+            <span className="material-symbols-outlined text-[22px]">account_circle</span>
+          )}
+          <span className="text-[10px] mt-0.5 font-medium">{session?.accessToken ? "Salir" : "Login"}</span>
+        </button>
+      </nav>
+
+      {/* Modal de Términos y Privacidad */}
+      <LegalModal
+        isOpen={legalModalType !== null}
+        initialTab={legalModalType || "terms"}
+        onClose={() => setLegalModalType(null)}
+      />
+
       <ErrorToast message={error} onClose={() => setError("")} />
     </>
   );
 }
 
 export default App;
+

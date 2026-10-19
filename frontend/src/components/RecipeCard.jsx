@@ -34,30 +34,32 @@ function RecipeCard({ recipe, onSelectRecipe, actionLabel, onAction }) {
             )}
           </div>
           <button 
-             className="text-outline hover:text-primary transition-colors flex items-center p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5 shrink-0"
+             className="text-outline hover:text-primary transition-colors flex items-center justify-center p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 shrink-0 min-h-[44px] min-w-[44px]"
              onClick={(e) => { e.stopPropagation(); onSelectRecipe(recipe.id); }}
+             aria-label={`Ver detalles de ${recipe.title}`}
              title="Ver receta completa"
+             type="button"
           >
-            <span className="material-symbols-outlined text-[20px]">open_in_full</span>
+            <span className="material-symbols-outlined text-[20px]" aria-hidden="true">open_in_full</span>
           </button>
         </div>
         
         <div className="flex flex-wrap gap-2 mt-2">
           {recipe.servings && (
             <span className="bg-surface/50 dark:bg-inverse-surface/40 text-secondary dark:text-secondary-fixed-dim font-label-sm px-3 py-1 rounded-full border border-white/40 dark:border-white/5 flex items-center gap-1">
-              <span className="material-symbols-outlined text-[16px]">group</span>
+              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">group</span>
               {recipe.servings}
             </span>
           )}
           {recipe.prepTime && (
             <span className="bg-surface/50 dark:bg-inverse-surface/40 text-secondary dark:text-secondary-fixed-dim font-label-sm px-3 py-1 rounded-full border border-white/40 dark:border-white/5 flex items-center gap-1">
-               <span className="material-symbols-outlined text-[16px]">schedule</span>
+               <span className="material-symbols-outlined text-[16px]" aria-hidden="true">schedule</span>
                Prep: {recipe.prepTime}
             </span>
           )}
           {recipe.cookTime && (
             <span className="bg-surface/50 dark:bg-inverse-surface/40 text-secondary dark:text-secondary-fixed-dim font-label-sm px-3 py-1 rounded-full border border-white/40 dark:border-white/5 flex items-center gap-1">
-               <span className="material-symbols-outlined text-[16px]">local_fire_department</span>
+               <span className="material-symbols-outlined text-[16px]" aria-hidden="true">local_fire_department</span>
                Cocción: {recipe.cookTime}
             </span>
           )}
@@ -71,14 +73,15 @@ function RecipeCard({ recipe, onSelectRecipe, actionLabel, onAction }) {
         </div>
         {actionLabel && onAction && (
           <button
-            className="mt-2 inline-flex h-11 items-center justify-center gap-2 rounded-full border border-primary/40 px-4 font-label-md text-primary hover:bg-primary/10 transition"
+            className="mt-2 inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-full border border-primary/40 px-4 font-label-md text-primary hover:bg-primary/10 transition"
             type="button"
+            aria-label={`${actionLabel} receta ${recipe.title}`}
             onClick={(event) => {
               event.stopPropagation();
               onAction(recipe.id);
             }}
           >
-            <span className="material-symbols-outlined text-[18px]">
+            <span className="material-symbols-outlined text-[18px]" aria-hidden="true">
               {actionLabel === "Guardar" ? "bookmark_add" : "workspace_premium"}
             </span>
             {actionLabel}
