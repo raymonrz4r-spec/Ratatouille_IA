@@ -1454,20 +1454,21 @@ Informacion del video:
         try:
             gemini_client = genai.Client(api_key=gemini_key)
             gemini_models = [
-                "gemini-3.1-flash-lite",
                 "gemini-3.8-flash",
                 "gemini-3.1-pro-preview",
-                "gemini-2.5-flash-lite",
-                "gemini-2.5-flash",
             ]
             try:
                 for m in gemini_client.models.list():
                     m_name = getattr(m, "name", "").replace("models/", "")
+                    # Ignorar modelos que no son de texto/recetas (generacion de video, audio en vivo, etc)
+                    if any(skip in m_name.lower() for skip in ["veo", "live", "native-audio", "embed", "imagen", "bidi", "tts"]):
+                        continue
+                    methods = getattr(m, "supported_generation_methods", []) or []
+                    if methods and "generateContent" not in methods:
+                        continue
                     if m_name and m_name not in gemini_models:
-                        if "lite" in m_name.lower():
-                            gemini_models.insert(0, m_name)
-                        elif "flash" in m_name.lower():
-                            gemini_models.insert(1, m_name)
+                        if "flash" in m_name.lower():
+                            gemini_models.append(m_name)
                         elif "pro" in m_name.lower():
                             gemini_models.append(m_name)
             except Exception as list_err:
