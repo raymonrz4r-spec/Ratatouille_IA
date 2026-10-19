@@ -1510,6 +1510,8 @@ Informacion del video:
     )
 
 
+@app.get("/")
+@app.get("/health")
 @app.get("/api/health")
 def health() -> dict[str, str | bool]:
     return {
