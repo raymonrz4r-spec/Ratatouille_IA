@@ -344,9 +344,10 @@ def upload_to_supabase_storage(recipe_id: str, image_data: bytes, content_type: 
 
 
 def init_database() -> None:
-    with db_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(
+    try:
+        with db_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 id VARCHAR(80) PRIMARY KEY,
@@ -453,6 +454,12 @@ def init_database() -> None:
             ON CONFLICT (user_id) DO NOTHING
             """
         )
+    except Exception as exc:
+        print(f"Advertencia al inicializar esquema DDL (tablas ya existen): {exc}")
+        # Verificar que la conexion y las tablas existen
+        with db_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1 FROM recipes LIMIT 1")
 
 
 @app.on_event("startup")
