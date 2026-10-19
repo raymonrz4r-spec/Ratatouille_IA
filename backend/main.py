@@ -244,7 +244,7 @@ def open_db_connection() -> Any:
     except (PostgresError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
-            detail="No se pudo conectar a PostgreSQL (Supabase). Revisa DATABASE_URL en .env.",
+            detail=f"No se pudo conectar a PostgreSQL (Supabase): {exc}",
         ) from exc
 
 
