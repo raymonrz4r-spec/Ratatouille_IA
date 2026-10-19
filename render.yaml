@@ -12,9 +12,9 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: SUPABASE_URL
-        value: https://khayklpgvggclpjaixqg.supabase.co
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoYXlrbHBndmdnY2xwamFpeHFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzODI1MjAsImV4cCI6MjEwNzk1ODUyMH0.KCSGIhI2IENzZLnP2WN8ZcgX6bYksVGqWUjR_i80p_A
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: CORS_ORIGINS
