@@ -1447,44 +1447,47 @@ Informacion del video:
 
     data: dict[str, Any] | None = None
     gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    errors: list[str] = []
 
-    try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un chef editor que convierte transcripciones y descripciones de videos en recetas estructuradas y devuelve JSON valido.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
+    # 1. Intentar con Gemini si la clave esta configurada
+    if gemini_key:
+        try:
+            gemini_client = genai.Client(api_key=gemini_key)
+            gemini_resp = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+            data = extract_json(gemini_resp.text or "{}")
+        except Exception as gemini_exc:
+            print(f"Error con Gemini al estructurar receta: {gemini_exc}")
+            errors.append(f"Gemini: {gemini_exc}")
+
+    # 2. Si no funciono o no hay Gemini, intentar con Groq
+    if data is None and client is not None:
+        try:
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Eres un chef editor que convierte transcripciones y descripciones de videos en recetas estructuradas y devuelve JSON valido.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+            content = completion.choices[0].message.content or "{}"
+            data = extract_json(content)
+        except Exception as groq_exc:
+            print(f"Error con Groq al estructurar receta: {groq_exc}")
+            errors.append(f"Groq: {groq_exc}")
+
+    if data is None:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo estructurar la receta desde la transcripcion. Errores: {'; '.join(errors) or 'Sin modelos disponibles'}",
         )
-        content = completion.choices[0].message.content or "{}"
-        data = extract_json(content)
-    except Exception as groq_exc:
-        if gemini_key:
-            try:
-                gemini_client = genai.Client(api_key=gemini_key)
-                gemini_resp = gemini_client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=prompt,
-                )
-                data = extract_json(gemini_resp.text or "{}")
-            except Exception:
-                pass
-        if data is None:
-            error_text = str(groq_exc)
-            if "invalid_api_key" in error_text or "Error code: 401" in error_text:
-                raise HTTPException(
-                    status_code=401,
-                    detail="La API key de Groq es invalida o fue revocada. Revisa GROQ_API_KEY en .env.",
-                ) from groq_exc
-            raise HTTPException(
-                status_code=502,
-                detail="No se pudo estructurar la receta desde la transcripcion.",
-            ) from groq_exc
 
     raw_ingredients = data.get("ingredients") or []
     raw_steps = data.get("steps") or []
